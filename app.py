@@ -481,75 +481,6 @@ def index():
     return render_template("index.html")
 
 
-@app.route("/api/run")
-def run_screener():
-    session = get_session()
-    now_et  = datetime.now(ET).strftime("%I:%M:%S %p ET")
-
-    # Screen all three universes in parallel
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
-        f_day  = ex.submit(screen_universe, DAY_UNIVERSE,     "Day Trade")
-        f_sq   = ex.submit(screen_universe, SQUEEZE_UNIVERSE, "Squeeze")
-        f_sw   = ex.submit(screen_universe, SWING_UNIVERSE,   "Swing")
-        day_snaps  = f_day.result()
-        sq_snaps   = f_sq.result()
-        swing_snaps = f_sw.result()
-
-    day_filtered   = filter_day_trades(day_snaps)
-    sq_filtered    = filter_squeezes(sq_snaps)
-    swing_filtered = filter_swings(swing_snaps)
-
-    # Remove squeeze tickers already in day trade results
-    day_tickers = {s["ticker"] for s in day_filtered}
-    sq_filtered = [s for s in sq_filtered if s["ticker"] not in day_tickers]
-
-    day_cards  = []
-    for s in day_filtered:
-        try:
-            row  = snap_to_row(s)
-            card = build_day_card(row, session)
-            card["pos"] = s["pos"]
-            day_cards.append(card)
-        except Exception as e:
-            print(f"Day card error {s['ticker']}: {e}")
-
-    sq_cards = []
-    for s in sq_filtered:
-        try:
-            row  = snap_to_row(s)
-            card = build_day_card(row, session)
-            card["squeeze"]     = True
-            card["short_float"] = f"{s['short_pct']:.1f}%"
-            card["float_size"]  = f"{int(s['float_sh']/1e6)}M" if s["float_sh"] else "—"
-            card["pos"] = s["pos"]
-            sq_cards.append(card)
-        except Exception as e:
-            print(f"Squeeze card error {s['ticker']}: {e}")
-
-    swing_cards = []
-    for s in swing_filtered:
-        try:
-            row  = snap_to_row(s)
-            card = build_swing_card(row)
-            if card:
-                card["pos"] = s["pos"]
-                swing_cards.append(card)
-        except Exception as e:
-            print(f"Swing card error {s['ticker']}: {e}")
-
-    all_sectors = sorted(set(
-        c["sector"] for cards in [day_cards, sq_cards, swing_cards]
-        for c in cards if c.get("sector")
-    ))
-
-    return jsonify({
-        "session":  session,
-        "time":     now_et,
-        "day":      day_cards,
-        "squeeze":  sq_cards,
-        "swing":    swing_cards,
-        "sectors":  all_sectors,
-    })
 
 
 def build_manual_card(ticker, mode, session):
@@ -749,6 +680,7 @@ def environment():
 
 
 
+@app.route("/api/analyze", methods=["POST"])
 def analyze_tickers():
     """Analyze a list of manually entered tickers."""
     from flask import request
