@@ -202,6 +202,83 @@
   /* TOAST */
   .toast { position: fixed; bottom: 20px; right: 20px; background: var(--bg3); border: 1px solid var(--border2); border-radius: var(--radius); padding: 10px 16px; font-size: 13px; color: var(--text); opacity: 0; transform: translateY(8px); transition: all 0.18s; pointer-events: none; z-index: 999; max-width: 320px; }
   .toast.show { opacity: 1; transform: translateY(0); }
+
+  /* ── MOBILE RESPONSIVE ── */
+  @media (max-width: 640px) {
+
+    /* Top bar stacks into two rows */
+    .topbar { padding: 10px 14px; gap: 8px; }
+    .topbar-left { gap: 8px; }
+    .topbar-right { width: 100%; justify-content: space-between; }
+    .clock { font-size: 11px; }
+    .last-run { display: none; }
+    .run-btn { padding: 8px 14px; font-size: 12px; flex: 1; justify-content: center; }
+    .app-title { font-size: 12px; }
+
+    /* Main padding tighter */
+    .main { padding: 12px 12px; }
+
+    /* Toolbar stacks */
+    .toolbar { flex-direction: column; align-items: stretch; gap: 8px; margin-bottom: 12px; }
+
+    /* Tabs scroll horizontally */
+    .tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; flex-wrap: nowrap; }
+    .tab-btn { padding: 6px 12px; font-size: 12px; flex-shrink: 0; }
+
+    /* Sector filter full width */
+    .filter-row { width: 100%; }
+    .sector-select { flex: 1; min-width: 0; }
+
+    /* Sort bar scrolls horizontally */
+    .sort-bar { overflow-x: auto; -webkit-overflow-scrolling: touch; flex-wrap: nowrap; padding-bottom: 2px; }
+    .sort-btn { flex-shrink: 0; padding: 5px 10px; font-size: 10px; }
+
+    /* Card header stacks on mobile */
+    .card-header { flex-direction: column; align-items: flex-start; gap: 6px; padding: 10px 12px; }
+    .card-left  { gap: 6px; }
+    .card-right { width: 100%; justify-content: space-between; }
+    .sym  { font-size: 16px; min-width: auto; }
+    .co   { max-width: 200px; font-size: 12px; }
+    .ind  { display: none; }
+    .price-val { font-size: 15px; }
+    .stat { font-size: 11px; }
+
+    /* Chevron moves to top right on mobile */
+    .card-header { position: relative; }
+    .chevron { position: absolute; top: 12px; right: 12px; }
+
+    /* Grids go 2-column on mobile */
+    .grid-4 { grid-template-columns: repeat(2, 1fr); }
+    .grid-2 { grid-template-columns: repeat(2, 1fr); }
+    .card-detail { padding: 10px; }
+
+    /* Plan rows wrap value below key on very small screens */
+    .plan-row { flex-direction: column; gap: 2px; padding: 7px 10px; }
+    .plan-val { text-align: left; }
+    .plan-key { font-size: 11px; }
+
+    /* Tile text smaller */
+    .tile { padding: 8px 10px; }
+    .tile-val { font-size: 13px; }
+
+    /* Extended hours bar wraps nicely */
+    .ext-bar { padding: 8px 12px; gap: 8px; }
+    .ext-price { font-size: 13px; }
+
+    /* News panel */
+    .news-panel { padding: 10px 12px; }
+    .news-headline { font-size: 12px; }
+
+    /* Manual search */
+    .wl-input-area { padding: 14px; }
+    .wl-controls { flex-direction: column; align-items: stretch; }
+    .wl-analyze-btn { justify-content: center; }
+    .ms-section-header { flex-direction: column; gap: 4px; }
+    .ms-hint { display: none; }
+
+    /* Toast full width on mobile */
+    .toast { left: 12px; right: 12px; bottom: 12px; max-width: none; text-align: center; }
+  }
 </style>
 </head>
 <body>
@@ -749,7 +826,24 @@ async function runScreener() {
     const res  = await fetch('/api/run');
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
-    allData    = data;
+
+    // Cloud mode — Finviz not available, show friendly message
+    if (data.cloud) {
+      ['day','squeeze','swing'].forEach(t => {
+        document.getElementById('pane-' + t).innerHTML = `
+          <div class="empty">
+            <strong>Screener unavailable on mobile</strong>
+            The Finviz screener only works when running locally on your PC.<br>
+            Use the <strong>🔍 Manual Search</strong> tab to analyze specific tickers here.
+          </div>`;
+      });
+      toast('Use Manual Search tab when on mobile');
+      btn.disabled = false;
+      btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="14" height="14"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Run Screener`;
+      return;
+    }
+
+    allData = data;
     populateSectors(data.sectors || []);
     renderAll(data);
     const et  = new Date(new Date().toLocaleString('en-US', {timeZone:'America/New_York'}));

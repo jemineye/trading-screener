@@ -1,31 +1,30 @@
 """
 ==============================================================
   TRADING SCREENER — Web App (Flask)
-  v3 — Sector filter + News feed
+  v5 — Finviz locally, Manual Search via yfinance everywhere
 ==============================================================
 
 SETUP (run once):
   pip install finviz pandas yfinance pytz flask flask-cors
 
 RUN:
-  python app.py
-
-Then open your browser to: http://localhost:5000
+  python app.py → http://localhost:5000
+  Railway      → Manual Search tab only
 ==============================================================
 """
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 from flask_cors import CORS
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, time as dtime
 import pytz
+import os
 import warnings
 warnings.filterwarnings("ignore")
 
 try:
     from finviz.screener import Screener
-    import finviz
     HAS_FINVIZ = True
 except ImportError:
     HAS_FINVIZ = False
@@ -36,6 +35,15 @@ CORS(app)
 # ══════════════════════════════════════════════════════════════
 #  CONFIG
 # ══════════════════════════════════════════════════════════════
+
+MIN_VOLUME  = 1_000_000
+EMA_SHORT   = 5
+EMA_LONG    = 9
+ET          = pytz.timezone("America/New_York")
+MARKET_OPEN = dtime(9, 30)
+
+# Detect if running on Railway (cloud) or locally
+IS_CLOUD = os.environ.get("RAILWAY_ENVIRONMENT") is not None
 
 DAY_TRADE_FILTERS = [
     "cap_smallunder",
@@ -62,12 +70,6 @@ SQUEEZE_FILTERS = [
     "sh_relvol_o2",
     "sh_price_u50",
 ]
-
-MIN_VOLUME  = 1_000_000
-EMA_SHORT   = 5
-EMA_LONG    = 9
-ET          = pytz.timezone("America/New_York")
-MARKET_OPEN = dtime(9, 30)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -478,45 +480,57 @@ def run_screener():
     session = get_session()
     now_et  = datetime.now(ET).strftime("%I:%M:%S %p ET")
 
-    day_raw   = apply_volume_gate(fetch_screener(DAY_TRADE_FILTERS, "Day Trades"))
-    sq_raw    = apply_volume_gate(fetch_screener(SQUEEZE_FILTERS,   "Squeezes"))
-    swing_raw = apply_volume_gate(fetch_screener(SWING_FILTERS,     "Swings"))
+    # Screen all three universes in parallel
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+        f_day  = ex.submit(screen_universe, DAY_UNIVERSE,     "Day Trade")
+        f_sq   = ex.submit(screen_universe, SQUEEZE_UNIVERSE, "Squeeze")
+        f_sw   = ex.submit(screen_universe, SWING_UNIVERSE,   "Swing")
+        day_snaps  = f_day.result()
+        sq_snaps   = f_sq.result()
+        swing_snaps = f_sw.result()
 
-    day_tickers = set(day_raw["Ticker"].tolist()) if not day_raw.empty else set()
+    day_filtered   = filter_day_trades(day_snaps)
+    sq_filtered    = filter_squeezes(sq_snaps)
+    swing_filtered = filter_swings(swing_snaps)
 
-    day_cards = []
-    for _, row in day_raw.iterrows():
+    # Remove squeeze tickers already in day trade results
+    day_tickers = {s["ticker"] for s in day_filtered}
+    sq_filtered = [s for s in sq_filtered if s["ticker"] not in day_tickers]
+
+    day_cards  = []
+    for s in day_filtered:
         try:
-            day_cards.append(build_day_card(row, session))
+            row  = snap_to_row(s)
+            card = build_day_card(row, session)
+            card["pos"] = s["pos"]
+            day_cards.append(card)
         except Exception as e:
-            print(f"Day card error {row.get('Ticker')}: {e}")
+            print(f"Day card error {s['ticker']}: {e}")
 
     sq_cards = []
-    if not sq_raw.empty:
-        for _, row in sq_raw.iterrows():
-            ticker = str(row.get("Ticker", ""))
-            if ticker in day_tickers:
-                continue
-            try:
-                card = build_day_card(row, session)
-                card["squeeze"]     = True
-                card["short_float"] = str(row.get("Short Float", "—"))
-                card["float_size"]  = str(row.get("Float", "—"))
-                sq_cards.append(card)
-            except Exception as e:
-                print(f"Squeeze card error {ticker}: {e}")
+    for s in sq_filtered:
+        try:
+            row  = snap_to_row(s)
+            card = build_day_card(row, session)
+            card["squeeze"]     = True
+            card["short_float"] = f"{s['short_pct']:.1f}%"
+            card["float_size"]  = f"{int(s['float_sh']/1e6)}M" if s["float_sh"] else "—"
+            card["pos"] = s["pos"]
+            sq_cards.append(card)
+        except Exception as e:
+            print(f"Squeeze card error {s['ticker']}: {e}")
 
     swing_cards = []
-    if not swing_raw.empty:
-        for _, row in swing_raw.iterrows():
-            try:
-                card = build_swing_card(row)
-                if card:
-                    swing_cards.append(card)
-            except Exception as e:
-                print(f"Swing card error {row.get('Ticker')}: {e}")
+    for s in swing_filtered:
+        try:
+            row  = snap_to_row(s)
+            card = build_swing_card(row)
+            if card:
+                card["pos"] = s["pos"]
+                swing_cards.append(card)
+        except Exception as e:
+            print(f"Swing card error {s['ticker']}: {e}")
 
-    # Collect all unique sectors across all results for the dropdown
     all_sectors = sorted(set(
         c["sector"] for cards in [day_cards, sq_cards, swing_cards]
         for c in cards if c.get("sector")
@@ -653,7 +667,82 @@ def build_manual_card(ticker, mode, session):
         return {"ticker": ticker, "error": str(e)}
 
 
-@app.route("/api/analyze", methods=["POST"])
+@app.route("/api/run")
+def run_screener():
+    # On Railway, Finviz is blocked by IP. Return friendly message.
+    if IS_CLOUD:
+        return jsonify({
+            "cloud":   True,
+            "message": "The main screener uses Finviz and only works when running locally on your PC. Use the 🔍 Manual Search tab to analyze specific tickers here.",
+            "session": get_session(),
+            "time":    datetime.now(ET).strftime("%I:%M:%S %p ET"),
+            "day": [], "squeeze": [], "swing": [], "sectors": [],
+        })
+
+    session = get_session()
+    now_et  = datetime.now(ET).strftime("%I:%M:%S %p ET")
+
+    day_raw   = apply_volume_gate(fetch_screener(DAY_TRADE_FILTERS, "Day Trades"))
+    sq_raw    = apply_volume_gate(fetch_screener(SQUEEZE_FILTERS,   "Squeezes"))
+    swing_raw = apply_volume_gate(fetch_screener(SWING_FILTERS,     "Swings"))
+
+    day_tickers = set(day_raw["Ticker"].tolist()) if not day_raw.empty else set()
+
+    day_cards = []
+    for _, row in day_raw.iterrows():
+        try:
+            day_cards.append(build_day_card(row, session))
+        except Exception as e:
+            print(f"Day card error {row.get('Ticker')}: {e}")
+
+    sq_cards = []
+    if not sq_raw.empty:
+        for _, row in sq_raw.iterrows():
+            ticker = str(row.get("Ticker", ""))
+            if ticker in day_tickers:
+                continue
+            try:
+                card = build_day_card(row, session)
+                card["squeeze"]     = True
+                card["short_float"] = str(row.get("Short Float", "—"))
+                card["float_size"]  = str(row.get("Float", "—"))
+                sq_cards.append(card)
+            except Exception as e:
+                print(f"Squeeze card error {ticker}: {e}")
+
+    swing_cards = []
+    if not swing_raw.empty:
+        for _, row in swing_raw.iterrows():
+            try:
+                card = build_swing_card(row)
+                if card:
+                    swing_cards.append(card)
+            except Exception as e:
+                print(f"Swing card error {row.get('Ticker')}: {e}")
+
+    all_sectors = sorted(set(
+        c["sector"] for cards in [day_cards, sq_cards, swing_cards]
+        for c in cards if c.get("sector")
+    ))
+
+    return jsonify({
+        "cloud":    False,
+        "session":  session,
+        "time":     now_et,
+        "day":      day_cards,
+        "squeeze":  sq_cards,
+        "swing":    swing_cards,
+        "sectors":  all_sectors,
+    })
+
+
+@app.route("/api/environment")
+def environment():
+    """Let the frontend know if it's running on cloud or locally."""
+    return jsonify({"cloud": IS_CLOUD})
+
+
+
 def analyze_tickers():
     """Analyze a list of manually entered tickers."""
     from flask import request
