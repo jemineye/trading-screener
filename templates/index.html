@@ -663,6 +663,22 @@ function toggle(id) {
 const fmt = v => v != null ? '$' + parseFloat(v).toFixed(2) : '—';
 const rr  = v => v > 0 ? '1:' + parseFloat(v).toFixed(1) + 'R' : '—';
 
+function fmtVol(v) {
+  const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/,/g, ''));
+  if (isNaN(n)) return v || '—';
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + 'K';
+  return n.toString();
+}
+
+function fmtRelVol(v) {
+  if (!v || v === '—' || v === '-') return '—';
+  const n = parseFloat(String(v).replace('x', ''));
+  if (isNaN(n)) return '—';
+  return n.toFixed(1) + 'x';
+}
+
 // ── Chart buttons ──────────────────────────────────────────
 const chartIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`;
 
@@ -766,8 +782,8 @@ function dayCardHTML(d, idx, prefix) {
       <div class="card-right">
         <span class="price-val">$${parseFloat(d.price).toFixed(2)}</span>
         <span class="${chgCls}">${d.change}</span>
-        <span class="stat">${String(d.relvol).replace('x','')}x</span>
-        <span class="stat">${typeof d.volume==='number'?d.volume.toLocaleString():d.volume}</span>
+        <span class="stat">${fmtRelVol(d.relvol)}</span>
+        <span class="stat">${fmtVol(d.volume)}</span>
         <svg class="chevron" id="chev-${id}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
       </div>
     </div>
@@ -832,8 +848,8 @@ function swingCardHTML(d, idx) {
       <div class="card-right">
         <span class="price-val">$${parseFloat(d.price).toFixed(2)}</span>
         <span class="${chgCls}">${d.change}</span>
-        <span class="stat">${String(d.relvol).replace('x','')}x</span>
-        <span class="stat">${typeof d.volume==='number'?d.volume.toLocaleString():d.volume}</span>
+        <span class="stat">${fmtRelVol(d.relvol)}</span>
+        <span class="stat">${fmtVol(d.volume)}</span>
         <svg class="chevron" id="chev-${id}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
       </div>
     </div>

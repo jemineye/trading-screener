@@ -100,7 +100,9 @@ def normalize_columns(df):
         "industry": "Industry", "price": "Price", "change": "Change",
         "volume": "Volume", "rel volume": "Rel Volume",
         "rel_volume": "Rel Volume", "relvol": "Rel Volume",
+        "relative volume": "Rel Volume", "rel. volume": "Rel Volume",
         "short float": "Short Float", "float": "Float",
+        "beta": "Beta", "sma200": "SMA200",
     }
     df = df.copy()
     df.columns = [rename_map.get(c.lower().strip(), c) for c in df.columns]
@@ -111,13 +113,49 @@ def fetch_screener(filters, label):
     if not HAS_FINVIZ:
         return pd.DataFrame()
     try:
-        screen = Screener(filters=filters, table="Overview", order="-relativevolume")
-        data = list(screen)
-        if not data:
+        # Fetch Overview table (company info, sector, market cap)
+        screen_ov = Screener(filters=filters, table="Overview", order="-volume")
+        data_ov   = list(screen_ov)
+        if not data_ov:
             return pd.DataFrame()
-        df = pd.DataFrame(data)
-        df = normalize_columns(df)
+        df_ov = normalize_columns(pd.DataFrame(data_ov))
+
+        # Fetch Technical table (beta, SMAs, RSI, ATR, gap)
+        screen_tc = Screener(filters=filters, table="Technical", order="-volume")
+        data_tc   = list(screen_tc)
+        df_tc     = normalize_columns(pd.DataFrame(data_tc)) if data_tc else pd.DataFrame()
+
+        # Merge on Ticker
+        if not df_tc.empty and "Ticker" in df_tc.columns:
+            # Drop duplicate columns before merge
+            drop_cols = [c for c in df_tc.columns if c in df_ov.columns and c != "Ticker"]
+            df_tc = df_tc.drop(columns=drop_cols, errors="ignore")
+            df = df_ov.merge(df_tc, on="Ticker", how="left")
+        else:
+            df = df_ov
+
+        # Calculate Rel Volume via yfinance for each ticker
+        print(f"  Calculating rel volume for {len(df)} tickers...")
+        def get_relvol(ticker):
+            try:
+                hist = yf.Ticker(ticker).history(period="1mo", interval="1d")
+                if hist.empty or len(hist) < 5:
+                    return None
+                avg_vol = float(hist["Volume"].iloc[:-1].mean())
+                cur_vol = float(hist["Volume"].iloc[-1])
+                return round(cur_vol / avg_vol, 1) if avg_vol > 0 else None
+            except:
+                return None
+
+        import concurrent.futures
+        tickers = df["Ticker"].tolist()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+            rvols = list(ex.map(get_relvol, tickers))
+        df["Rel Volume"] = rvols
+
+        print(f"  → {len(df)} results with {df['Rel Volume'].notna().sum()} rel vol values")
         return df
+
     except Exception as e:
         print(f"Error fetching {label}: {e}")
         return pd.DataFrame()
@@ -131,7 +169,15 @@ def apply_volume_gate(df):
         df["Volume"] = pd.to_numeric(
             df["Volume"].astype(str).str.replace(",", ""), errors="coerce"
         )
-        return df[df["Volume"] >= MIN_VOLUME]
+        df = df[df["Volume"] >= MIN_VOLUME]
+    # Sort by rel volume descending
+    if "Rel Volume" in df.columns:
+        df = df.copy()
+        df["Rel Volume"] = pd.to_numeric(df["Rel Volume"], errors="coerce")
+        df = df.sort_values("Rel Volume", ascending=False)
+        df["Rel Volume"] = df["Rel Volume"].apply(
+            lambda x: str(round(x, 1)) if pd.notna(x) else "—"
+        )
     return df
 
 
@@ -365,7 +411,7 @@ def build_day_card(row, session):
     industry = str(row.get("Industry", ""))
     price   = safe_float(row.get("Price", 0))
     change  = str(row.get("Change", "—"))
-    relvol  = str(row.get("Rel Volume", "—"))
+    relvol  = str(row.get("Rel Volume") or row.get("Relative Volume") or row.get("RelVolume") or "—").replace("x", "").strip()
     volume  = str(row.get("Volume", "—"))
 
     tech = get_day_trade_technicals(ticker, session)
@@ -431,7 +477,7 @@ def build_swing_card(row):
     industry = str(row.get("Industry", ""))
     price    = safe_float(row.get("Price", 0))
     change   = str(row.get("Change", "—"))
-    relvol   = str(row.get("Rel Volume", "—"))
+    relvol   = str(row.get("Rel Volume") or row.get("Relative Volume") or row.get("RelVolume") or "—").replace("x", "").strip()
     volume   = str(row.get("Volume", "—"))
     pos      = not change.startswith("-") if change not in ("—", "") else True
 
