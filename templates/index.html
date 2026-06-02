@@ -212,6 +212,46 @@
   .chart-btn:hover { opacity: 0.75; }
   .chart-btn svg { width: 10px; height: 10px; }
 
+  /* CHECKBOXES + FAVORITES */
+  .card-checkbox {
+    width: 18px; height: 18px; flex-shrink: 0;
+    accent-color: var(--amber); cursor: pointer;
+    margin-right: 2px;
+  }
+  .card.favorited { border-color: rgba(255,179,71,0.4); }
+  .card.favorited .card-header { background: rgba(255,179,71,0.04); }
+
+  .fav-bar {
+    display: none; align-items: center; gap: 8px;
+    padding: 8px 12px; margin-bottom: 10px;
+    background: var(--amber-bg); border: 1px solid rgba(255,179,71,0.2);
+    border-radius: var(--radius-sm); flex-wrap: wrap;
+  }
+  .fav-bar.visible { display: flex; }
+  .fav-count { font-size: 12px; font-weight: 600; color: var(--amber); font-family: var(--mono); }
+  .fav-label { font-size: 12px; color: var(--text2); flex: 1; }
+  .fav-btn {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 12px; border-radius: var(--radius-sm);
+    border: 1px solid rgba(255,179,71,0.3); background: var(--bg2);
+    color: var(--amber); font-size: 12px; font-weight: 600;
+    cursor: pointer; white-space: nowrap; transition: all 0.1s;
+  }
+  .fav-btn:hover { background: var(--amber-bg); }
+  .fav-btn.active { background: var(--amber); color: #1a0f00; border-color: var(--amber); }
+  .fav-copy-btn {
+    display: flex; align-items: center; gap: 6px;
+    padding: 5px 12px; border-radius: var(--radius-sm);
+    border: 1px solid rgba(255,179,71,0.3); background: var(--bg2);
+    color: var(--text2); font-size: 12px; font-weight: 500;
+    cursor: pointer; white-space: nowrap; transition: all 0.1s;
+  }
+  .fav-copy-btn:hover { color: var(--text); border-color: var(--border2); }
+  .fav-clear-btn {
+    font-size: 11px; color: var(--text3); cursor: pointer; white-space: nowrap;
+  }
+  .fav-clear-btn:hover { color: var(--red); }
+
   /* TOAST */
   .toast { position: fixed; bottom: 20px; right: 20px; background: var(--bg3); border: 1px solid var(--border2); border-radius: var(--radius); padding: 10px 16px; font-size: 13px; color: var(--text); opacity: 0; transform: translateY(8px); transition: all 0.18s; pointer-events: none; z-index: 999; max-width: 320px; }
   .toast.show { opacity: 1; transform: translateY(0); }
@@ -338,6 +378,14 @@
     <button class="sort-btn" id="sort-rval"   onclick="setSort('rval')">R Value <span class="sort-arrow" id="arr-rval">↕</span></button>
   </div>
 
+  <div class="fav-bar" id="fav-bar">
+    <span class="fav-count" id="fav-count">0 selected</span>
+    <span class="fav-label">tickers favorited</span>
+    <button class="fav-btn" id="fav-filter-btn" onclick="toggleFavFilter()">⭐ Show Favorites Only</button>
+    <button class="fav-copy-btn" onclick="copyFavorites()">📋 Copy Tickers</button>
+    <span class="fav-clear-btn" onclick="clearFavorites()">Clear all</span>
+  </div>
+
   <div id="pane-day">    <div class="empty"><strong>Ready to scan</strong>Hit "Run Screener" to fetch live candidates.</div></div>
   <div id="pane-squeeze" style="display:none"><div class="empty"><strong>Ready to scan</strong>Hit "Run Screener" to fetch live candidates.</div></div>
   <div id="pane-swing"   style="display:none"><div class="empty"><strong>Ready to scan</strong>Hit "Run Screener" to fetch live candidates.</div></div>
@@ -450,6 +498,70 @@ function sortCards(cards) {
   });
 }
 
+// ── Favorites ──────────────────────────────────────────────
+let favorites    = new Set(JSON.parse(localStorage.getItem('fav_tickers') || '[]'));
+let favFilterOn  = false;
+
+function saveFavorites() {
+  localStorage.setItem('fav_tickers', JSON.stringify([...favorites]));
+}
+
+function toggleFavorite(ticker, checkbox) {
+  if (checkbox.checked) {
+    favorites.add(ticker);
+  } else {
+    favorites.delete(ticker);
+  }
+  // Update card border
+  document.querySelectorAll(`[id^="card-"]`).forEach(card => {
+    const cb = card.querySelector('.card-checkbox');
+    if (cb && cb.getAttribute('onclick') && cb.getAttribute('onclick').includes(`'${ticker}'`)) {
+      card.classList.toggle('favorited', checkbox.checked);
+    }
+  });
+  saveFavorites();
+  updateFavBar();
+  if (favFilterOn) renderAll(allData);
+}
+
+function updateFavBar() {
+  const bar   = document.getElementById('fav-bar');
+  const count = document.getElementById('fav-count');
+  const btn   = document.getElementById('fav-filter-btn');
+  const n     = favorites.size;
+  count.textContent = `${n} ticker${n !== 1 ? 's' : ''}`;
+  bar.classList.toggle('visible', n > 0);
+  btn.classList.toggle('active', favFilterOn);
+}
+
+function toggleFavFilter() {
+  favFilterOn = !favFilterOn;
+  updateFavBar();
+  if (allData) renderAll(allData);
+}
+
+function copyFavorites() {
+  if (!favorites.size) { toast('No favorites selected yet'); return; }
+  const text = [...favorites].join(', ');
+  navigator.clipboard.writeText(text).then(() => {
+    toast(`✓ Copied ${favorites.size} ticker${favorites.size !== 1 ? 's' : ''} — paste into Claude!`);
+  }).catch(() => {
+    // Fallback for browsers that block clipboard
+    prompt('Copy these tickers:', text);
+  });
+}
+
+function clearFavorites() {
+  favorites.clear();
+  saveFavorites();
+  favFilterOn = false;
+  updateFavBar();
+  // Uncheck all checkboxes
+  document.querySelectorAll('.card-checkbox').forEach(cb => cb.checked = false);
+  document.querySelectorAll('.card.favorited').forEach(card => card.classList.remove('favorited'));
+  if (allData) renderAll(allData);
+}
+
 // ── Clock ──────────────────────────────────────────────────
 function updateClock() {
   const et   = new Date(new Date().toLocaleString('en-US', {timeZone:'America/New_York'}));
@@ -492,8 +604,9 @@ function clearFilter() {
 }
 
 function filterCards(cards) {
-  if (!activeSector) return sortCards(cards);
-  return sortCards(cards.filter(c => c.sector === activeSector));
+  let filtered = activeSector ? cards.filter(c => c.sector === activeSector) : cards;
+  if (favFilterOn && favorites.size > 0) filtered = filtered.filter(c => favorites.has(c.ticker));
+  return sortCards(filtered);
 }
 
 function updateResultCount() {
@@ -639,9 +752,12 @@ function dayCardHTML(d, idx, prefix) {
     </div>` : '';
 
   return `
-  <div class="card">
+  <div class="card ${favorites.has(d.ticker) ? 'favorited' : ''}" id="card-${id}">
     <div class="card-header" onclick="toggle('${id}')">
       <div class="card-left">
+        <input type="checkbox" class="card-checkbox" ${favorites.has(d.ticker) ? 'checked' : ''}
+          onclick="event.stopPropagation();toggleFavorite('${d.ticker}',this)"
+          title="Add to favorites">
         <span class="sym">${d.ticker}</span>
         <span class="co">${d.company}</span>
         <span class="ind">${d.industry || d.sector || ''}</span>
@@ -701,9 +817,12 @@ function swingCardHTML(d, idx) {
   const lvl = d.levels, plan = d.plan;
 
   return `
-  <div class="card">
+  <div class="card ${favorites.has(d.ticker) ? 'favorited' : ''}" id="card-${id}">
     <div class="card-header" onclick="toggle('${id}')">
       <div class="card-left">
+        <input type="checkbox" class="card-checkbox" ${favorites.has(d.ticker) ? 'checked' : ''}
+          onclick="event.stopPropagation();toggleFavorite('${d.ticker}',this)"
+          title="Add to favorites">
         <span class="sym">${d.ticker}</span>
         <span class="co">${d.company}</span>
         <span class="ind">${d.industry || d.sector || ''}</span>
@@ -851,6 +970,7 @@ window.addEventListener('load', () => {
   const savedSwing = localStorage.getItem('ms_swing_tickers');
   if (savedDay)   document.getElementById('ms-day-input').value   = savedDay;
   if (savedSwing) document.getElementById('ms-swing-input').value = savedSwing;
+  updateFavBar();
 });
 async function runScreener() {
   const btn = document.getElementById('run-btn');
