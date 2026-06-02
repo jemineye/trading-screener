@@ -38,7 +38,8 @@
 
   /* TOOLBAR (tabs + filter) */
   .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
-  .tabs { display: flex; gap: 4px; }
+  .tabs { display: flex; gap: 4px; overflow-x: auto; -webkit-overflow-scrolling: touch; flex-wrap: nowrap; scrollbar-width: none; -ms-overflow-style: none; }
+  .tabs::-webkit-scrollbar { display: none; }
   .tab-btn { display: flex; align-items: center; gap: 7px; padding: 7px 16px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg2); color: var(--text2); font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.1s; white-space: nowrap; }
   .tab-btn:hover { border-color: var(--border2); color: var(--text); }
   .tab-btn.active { background: var(--bg3); border-color: var(--border2); color: var(--text); }
@@ -380,8 +381,9 @@
 
   <div class="fav-bar" id="fav-bar">
     <span class="fav-count" id="fav-count">0 selected</span>
-    <span class="fav-label">tickers favorited</span>
+    <span class="fav-label">on this tab</span>
     <button class="fav-btn" id="fav-filter-btn" onclick="toggleFavFilter()">⭐ Show Favorites Only</button>
+    <button class="fav-btn" id="sel-all-btn" onclick="selectAll()" style="background:var(--bg2);color:var(--text2);border-color:var(--border2)">☑ Select All</button>
     <button class="fav-copy-btn" onclick="copyFavorites()">📋 Copy Tickers</button>
     <span class="fav-clear-btn" onclick="clearFavorites()">Clear all</span>
   </div>
@@ -506,14 +508,23 @@ function saveFavorites() {
   localStorage.setItem('fav_tickers', JSON.stringify([...favorites]));
 }
 
+function getTabTickers() {
+  // Get all tickers visible on the current active tab
+  const pane = document.getElementById('pane-' + activeTab);
+  if (!pane) return [];
+  return [...pane.querySelectorAll('.card-checkbox')].map(cb => {
+    const m = cb.getAttribute('onclick').match(/'([A-Z.]+)'/);
+    return m ? m[1] : null;
+  }).filter(Boolean);
+}
+
 function toggleFavorite(ticker, checkbox) {
   if (checkbox.checked) {
     favorites.add(ticker);
   } else {
     favorites.delete(ticker);
   }
-  // Update card border
-  document.querySelectorAll(`[id^="card-"]`).forEach(card => {
+  document.querySelectorAll('.card').forEach(card => {
     const cb = card.querySelector('.card-checkbox');
     if (cb && cb.getAttribute('onclick') && cb.getAttribute('onclick').includes(`'${ticker}'`)) {
       card.classList.toggle('favorited', checkbox.checked);
@@ -524,17 +535,44 @@ function toggleFavorite(ticker, checkbox) {
   if (favFilterOn) renderAll(allData);
 }
 
+function selectAll() {
+  const tickers = getTabTickers();
+  const allChecked = tickers.every(t => favorites.has(t));
+  // If all already selected → deselect all on this tab; otherwise select all
+  tickers.forEach(t => {
+    if (allChecked) favorites.delete(t);
+    else favorites.add(t);
+  });
+  saveFavorites();
+  if (allData) renderAll(allData);
+  updateFavBar();
+  // Update select all button label
+  const btn = document.getElementById('sel-all-btn');
+  btn.textContent = allChecked ? '☑ Select All' : '☐ Deselect All';
+}
+
 function updateFavBar() {
   const bar   = document.getElementById('fav-bar');
   const count = document.getElementById('fav-count');
   const btn   = document.getElementById('fav-filter-btn');
-  const n     = favorites.size;
-  count.textContent = `${n} ticker${n !== 1 ? 's' : ''}`;
-  bar.classList.toggle('visible', n > 0);
+  const selBtn = document.getElementById('sel-all-btn');
+
+  // Count favorites on current tab only
+  const tabTickers  = getTabTickers();
+  const tabFavCount = tabTickers.filter(t => favorites.has(t)).length;
+  const totalFavs   = favorites.size;
+
+  count.textContent = `${tabFavCount} selected`;
+  bar.classList.toggle('visible', totalFavs > 0 || tabTickers.length > 0);
   btn.classList.toggle('active', favFilterOn);
+
+  // Update select all label
+  const allSelected = tabTickers.length > 0 && tabTickers.every(t => favorites.has(t));
+  selBtn.textContent = allSelected ? '☐ Deselect All' : '☑ Select All';
 }
 
 function toggleFavFilter() {
+  // Scoped to active tab only
   favFilterOn = !favFilterOn;
   updateFavBar();
   if (allData) renderAll(allData);
@@ -546,19 +584,28 @@ function copyFavorites() {
   navigator.clipboard.writeText(text).then(() => {
     toast(`✓ Copied ${favorites.size} ticker${favorites.size !== 1 ? 's' : ''} — paste into Claude!`);
   }).catch(() => {
-    // Fallback for browsers that block clipboard
     prompt('Copy these tickers:', text);
   });
 }
 
 function clearFavorites() {
-  favorites.clear();
+  // Only clear favorites on the current tab
+  const tabTickers = getTabTickers();
+  tabTickers.forEach(t => favorites.delete(t));
   saveFavorites();
   favFilterOn = false;
   updateFavBar();
-  // Uncheck all checkboxes
-  document.querySelectorAll('.card-checkbox').forEach(cb => cb.checked = false);
-  document.querySelectorAll('.card.favorited').forEach(card => card.classList.remove('favorited'));
+  document.querySelectorAll('.card-checkbox').forEach(cb => {
+    const m = cb.getAttribute('onclick').match(/'([A-Z.]+)'/);
+    if (m && tabTickers.includes(m[1])) cb.checked = false;
+  });
+  document.querySelectorAll('.card.favorited').forEach(card => {
+    const cb = card.querySelector('.card-checkbox');
+    if (cb) {
+      const m = cb.getAttribute('onclick').match(/'([A-Z.]+)'/);
+      if (m && tabTickers.includes(m[1])) card.classList.remove('favorited');
+    }
+  });
   if (allData) renderAll(allData);
 }
 
@@ -583,6 +630,9 @@ function showTab(tab) {
     document.getElementById('pane-' + t).style.display = t === tab ? '' : 'none';
     document.getElementById('tab-' + t + '-btn').className = 'tab-btn' + (t === tab ? ' active' : '');
   });
+  // Reset fav filter when switching tabs so each tab is independent
+  favFilterOn = false;
+  updateFavBar();
   updateResultCount();
 }
 
@@ -808,9 +858,12 @@ function dayCardHTML(d, idx, prefix) {
           <div class="plan-row"><span class="plan-key">Target 2</span><span class="plan-val v-green">${fmt(plan.t2)} &nbsp;(${rr(plan.rr2)}) ← key high</span></div>
         </div>
         <div class="plan-block">
-          <div class="plan-title">EMAs</div>
+          <div class="plan-title">EMAs &amp; Moving Averages</div>
           <div class="plan-row"><span class="plan-key">EMA5</span><span class="plan-val v-plain">${fmt(d.emas.ema5)}</span></div>
           <div class="plan-row"><span class="plan-key">EMA9</span><span class="plan-val v-plain">${fmt(d.emas.ema9)}</span></div>
+          ${d.sma50  ? `<div class="plan-row"><span class="plan-key">SMA50</span><span class="plan-val v-plain">${fmt(d.sma50)}</span></div>` : ''}
+          ${d.sma200 ? `<div class="plan-row"><span class="plan-key">SMA200</span><span class="plan-val v-plain">${fmt(d.sma200)}</span></div>` : ''}
+          ${d.atr    ? `<div class="plan-row"><span class="plan-key">ATR</span><span class="plan-val v-amber">${fmt(d.atr)} &nbsp;<span style="font-size:11px;color:var(--text3)">avg daily range</span></span></div>` : ''}
         </div>
         ${pmBlock}
       </div>
