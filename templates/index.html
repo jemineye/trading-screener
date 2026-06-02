@@ -199,6 +199,19 @@
   .sort-btn.active { border-color: var(--blue); color: var(--blue); background: var(--blue-bg); }
   .sort-arrow { font-size: 10px; }
 
+  /* CHART BUTTONS */
+  .chart-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 10px; font-weight: 600; padding: 2px 8px;
+    border-radius: 20px; cursor: pointer; white-space: nowrap;
+    text-decoration: none;
+    background: rgba(179,157,219,0.12); color: var(--purple);
+    border: 1px solid rgba(179,157,219,0.2);
+    transition: opacity 0.15s;
+  }
+  .chart-btn:hover { opacity: 0.75; }
+  .chart-btn svg { width: 10px; height: 10px; }
+
   /* TOAST */
   .toast { position: fixed; bottom: 20px; right: 20px; background: var(--bg3); border: 1px solid var(--border2); border-radius: var(--radius); padding: 10px 16px; font-size: 13px; color: var(--text); opacity: 0; transform: translateY(8px); transition: all 0.18s; pointer-events: none; z-index: 999; max-width: 320px; }
   .toast.show { opacity: 1; transform: translateY(0); }
@@ -537,6 +550,30 @@ function toggle(id) {
 const fmt = v => v != null ? '$' + parseFloat(v).toFixed(2) : '—';
 const rr  = v => v > 0 ? '1:' + parseFloat(v).toFixed(1) + 'R' : '—';
 
+// ── Chart buttons ──────────────────────────────────────────
+const chartIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`;
+
+function tvUrl(ticker, interval) {
+  // interval: 1=1min, 5=5min, D=daily
+  return `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(ticker)}&interval=${interval}`;
+}
+
+function dayChartBtns(ticker) {
+  return `<a class="chart-btn" href="${tvUrl(ticker, 1)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">
+    ${chartIcon} 1min
+  </a>`;
+}
+
+function swingChartBtns(ticker) {
+  return `
+  <a class="chart-btn" href="${tvUrl(ticker, 'D')}" target="_blank" rel="noopener" onclick="event.stopPropagation()">
+    ${chartIcon} Daily
+  </a>
+  <a class="chart-btn" href="${tvUrl(ticker, 5)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">
+    ${chartIcon} 5min
+  </a>`;
+}
+
 // ── News HTML ──────────────────────────────────────────────
 function newsHTML(news) {
   if (!news || news.length === 0)
@@ -608,7 +645,7 @@ function dayCardHTML(d, idx, prefix) {
         <span class="sym">${d.ticker}</span>
         <span class="co">${d.company}</span>
         <span class="ind">${d.industry || d.sector || ''}</span>
-        ${sqBadge}${emaBadge}${newsBadge}
+        ${sqBadge}${emaBadge}${newsBadge}${dayChartBtns(d.ticker)}
       </div>
       <div class="card-right">
         <span class="price-val">$${parseFloat(d.price).toFixed(2)}</span>
@@ -671,7 +708,7 @@ function swingCardHTML(d, idx) {
         <span class="co">${d.company}</span>
         <span class="ind">${d.industry || d.sector || ''}</span>
         <span class="badge b-blue">200MA Rising ↑</span>
-        ${emaBadge}${newsBadge}
+        ${emaBadge}${newsBadge}${swingChartBtns(d.ticker)}
       </div>
       <div class="card-right">
         <span class="price-val">$${parseFloat(d.price).toFixed(2)}</span>
