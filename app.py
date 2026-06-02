@@ -43,7 +43,13 @@ ET          = pytz.timezone("America/New_York")
 MARKET_OPEN = dtime(9, 30)
 
 # Detect if running on Railway (cloud) or locally
-IS_CLOUD = os.environ.get("RAILWAY_ENVIRONMENT") is not None
+# Railway sets several env vars — check multiple for reliability
+IS_CLOUD = any([
+    os.environ.get("RAILWAY_ENVIRONMENT"),
+    os.environ.get("RAILWAY_PROJECT_ID"),
+    os.environ.get("RAILWAY_SERVICE_ID"),
+    os.environ.get("PORT"),  # Railway always sets PORT; local runs don't
+])
 
 DAY_TRADE_FILTERS = [
     "cap_smallunder",
