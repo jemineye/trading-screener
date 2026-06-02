@@ -766,7 +766,7 @@ function dayCardHTML(d, idx, prefix) {
       <div class="card-right">
         <span class="price-val">$${parseFloat(d.price).toFixed(2)}</span>
         <span class="${chgCls}">${d.change}</span>
-        <span class="stat">${d.relvol}x</span>
+        <span class="stat">${String(d.relvol).replace('x','')}x</span>
         <span class="stat">${typeof d.volume==='number'?d.volume.toLocaleString():d.volume}</span>
         <svg class="chevron" id="chev-${id}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
       </div>
@@ -832,7 +832,7 @@ function swingCardHTML(d, idx) {
       <div class="card-right">
         <span class="price-val">$${parseFloat(d.price).toFixed(2)}</span>
         <span class="${chgCls}">${d.change}</span>
-        <span class="stat">${d.relvol}x</span>
+        <span class="stat">${String(d.relvol).replace('x','')}x</span>
         <span class="stat">${typeof d.volume==='number'?d.volume.toLocaleString():d.volume}</span>
         <svg class="chevron" id="chev-${id}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
       </div>

@@ -398,7 +398,7 @@ def build_day_card(row, session):
     t2    = round(key_high * 1.002, 2)
     rr1   = round((t1 - entry_low) / risk, 1) if risk > 0 else 0
     rr2   = round((t2 - entry_low) / risk, 1) if risk > 0 else 0
-    pos   = change.startswith("+") if change != "—" else True
+    pos   = not change.startswith("-") if change not in ("—", "") else True
 
     return {
         "ticker": ticker, "company": company,
@@ -433,7 +433,7 @@ def build_swing_card(row):
     change   = str(row.get("Change", "—"))
     relvol   = str(row.get("Rel Volume", "—"))
     volume   = str(row.get("Volume", "—"))
-    pos      = change.startswith("+") if change != "—" else True
+    pos      = not change.startswith("-") if change not in ("—", "") else True
 
     tech = get_swing_technicals(ticker)
     if tech.get("error") or not tech.get("sma200_rising"):
