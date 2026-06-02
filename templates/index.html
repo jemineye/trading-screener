@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trading Screener</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:       #0f1117; --bg2: #181c25; --bg3: #1e2330; --bg4: #242938;
+    --border:   rgba(255,255,255,0.07); --border2: rgba(255,255,255,0.13);
+    --text:     #e8eaf0; --text2: #8b90a0; --text3: #4e5568;
+    --green:    #3ddc84; --green-bg: rgba(61,220,132,0.1);
+    --red:      #ff6b6b; --red-bg: rgba(255,107,107,0.1);
+    --amber:    #ffb347; --amber-bg: rgba(255,179,71,0.1);
+    --blue:     #4da6ff; --blue-bg: rgba(77,166,255,0.1);
+    --purple:   #b39ddb; --purple-bg: rgba(179,157,219,0.1);
+    --radius: 10px; --radius-sm: 6px; --mono: 'Courier New', monospace;
+  }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; min-height: 100vh; }
+
+  /* TOP BAR */
+  .topbar { position: sticky; top: 0; z-index: 100; background: var(--bg2); border-bottom: 1px solid var(--border); padding: 11px 24px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .topbar-left { display: flex; align-items: center; gap: 12px; }
+  .app-title { font-size: 14px; font-weight: 700; letter-spacing: 0.07em; color: var(--text); font-family: var(--mono); }
+  .session-pill { font-size: 10px; font-weight: 700; padding: 3px 10px; border-radius: 20px; letter-spacing: 0.06em; text-transform: uppercase; }
+  .pill-pre   { background: var(--amber-bg); color: var(--amber);  border: 1px solid rgba(255,179,71,0.2); }
+  .pill-open  { background: var(--green-bg); color: var(--green);  border: 1px solid rgba(61,220,132,0.2); }
+  .pill-after { background: var(--red-bg);   color: var(--red);    border: 1px solid rgba(255,107,107,0.2); }
+  .topbar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .clock { font-size: 12px; color: var(--text2); font-family: var(--mono); }
+  .last-run { font-size: 11px; color: var(--text3); font-family: var(--mono); }
+  .run-btn { display: flex; align-items: center; gap: 7px; padding: 8px 16px; border-radius: var(--radius-sm); background: var(--green); color: #071a0d; font-size: 13px; font-weight: 700; border: none; cursor: pointer; transition: opacity 0.15s, transform 0.1s; }
+  .run-btn:hover  { opacity: 0.85; }
+  .run-btn:active { transform: scale(0.97); }
+  .run-btn:disabled { background: var(--bg3); color: var(--text3); cursor: default; transform: none; }
+  .run-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+
+  /* TOOLBAR (tabs + filter) */
+  .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+  .tabs { display: flex; gap: 4px; }
+  .tab-btn { display: flex; align-items: center; gap: 7px; padding: 7px 16px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg2); color: var(--text2); font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.1s; white-space: nowrap; }
+  .tab-btn:hover { border-color: var(--border2); color: var(--text); }
+  .tab-btn.active { background: var(--bg3); border-color: var(--border2); color: var(--text); }
+  .tab-count { font-size: 10px; padding: 1px 7px; border-radius: 20px; background: var(--bg); color: var(--text3); font-family: var(--mono); }
+  .tab-btn.active .tab-count { background: var(--border); color: var(--text2); }
+
+  /* SECTOR FILTER */
+  .filter-row { display: flex; align-items: center; gap: 8px; }
+  .filter-label { font-size: 11px; color: var(--text3); white-space: nowrap; }
+  .sector-select {
+    background: var(--bg2); color: var(--text); border: 1px solid var(--border2);
+    border-radius: var(--radius-sm); padding: 6px 28px 6px 10px;
+    font-size: 12px; cursor: pointer; outline: none;
+    appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b90a0' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 8px center;
+    min-width: 180px;
+  }
+  .sector-select:focus { border-color: var(--blue); }
+  .clear-filter { font-size: 11px; color: var(--blue); cursor: pointer; white-space: nowrap; display: none; }
+  .clear-filter:hover { text-decoration: underline; }
+
+  /* RESULT COUNT */
+  .result-count { font-size: 11px; color: var(--text3); font-family: var(--mono); }
+
+  /* MAIN */
+  .main { max-width: 1100px; margin: 0 auto; padding: 20px 24px; }
+
+  /* SECTION HEADER */
+  .section-hdr { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text3); padding-bottom: 10px; margin-bottom: 12px; border-bottom: 1px solid var(--border); font-family: var(--mono); }
+
+  /* TICKER CARD */
+  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; overflow: hidden; transition: border-color 0.15s; }
+  .card:hover { border-color: var(--border2); }
+  .card-header { display: flex; align-items: center; justify-content: space-between; padding: 11px 14px; cursor: pointer; gap: 10px; }
+  .card-header:hover { background: var(--bg3); }
+  .card-left  { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+  .card-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+  .sym  { font-size: 15px; font-weight: 700; color: var(--text); font-family: var(--mono); min-width: 55px; }
+  .co   { font-size: 12px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+  .ind  { font-size: 11px; color: var(--text3); white-space: nowrap; }
+
+  .badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 20px; letter-spacing: 0.03em; white-space: nowrap; }
+  .b-green  { background: var(--green-bg);  color: var(--green);  border: 1px solid rgba(61,220,132,0.18); }
+  .b-red    { background: var(--red-bg);    color: var(--red);    border: 1px solid rgba(255,107,107,0.18); }
+  .b-amber  { background: var(--amber-bg);  color: var(--amber);  border: 1px solid rgba(255,179,71,0.18); }
+  .b-blue   { background: var(--blue-bg);   color: var(--blue);   border: 1px solid rgba(77,166,255,0.18); }
+  .b-purple { background: var(--purple-bg); color: var(--purple); border: 1px solid rgba(179,157,219,0.18); }
+
+  .news-badge { display: flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 20px; background: var(--blue-bg); color: var(--blue); border: 1px solid rgba(77,166,255,0.18); cursor: pointer; white-space: nowrap; }
+  .news-badge svg { width: 10px; height: 10px; }
+  .news-badge.no-news { background: var(--bg3); color: var(--text3); border-color: var(--border); }
+
+  .price-val { font-size: 15px; font-weight: 700; font-family: var(--mono); color: var(--text); }
+  .chg-pos   { font-size: 12px; font-weight: 600; color: var(--green); font-family: var(--mono); }
+  .chg-neg   { font-size: 12px; font-weight: 600; color: var(--red);   font-family: var(--mono); }
+  .stat      { font-size: 11px; color: var(--text3); font-family: var(--mono); white-space: nowrap; }
+  .chevron   { color: var(--text3); transition: transform 0.18s; flex-shrink: 0; }
+  .chevron.open { transform: rotate(180deg); }
+
+  /* CARD BODY */
+  .card-body { display: none; border-top: 1px solid var(--border); }
+  .card-body.open { display: block; }
+
+  /* NEWS PANEL */
+  .news-panel { padding: 12px 14px; border-bottom: 1px solid var(--border); background: var(--bg); }
+  .news-panel-title { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text3); margin-bottom: 8px; font-family: var(--mono); }
+  .news-item { display: flex; flex-direction: column; gap: 3px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+  .news-item:last-child { border-bottom: none; padding-bottom: 0; }
+  .news-headline { font-size: 13px; color: var(--text); line-height: 1.4; }
+  .news-headline a { color: var(--blue); text-decoration: none; }
+  .news-headline a:hover { text-decoration: underline; }
+  .news-meta { font-size: 11px; color: var(--text3); font-family: var(--mono); display: flex; gap: 10px; }
+  .news-empty { font-size: 12px; color: var(--text3); padding: 6px 0; }
+
+  /* LEVELS + PLAN */
+  .card-detail { padding: 14px; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .tile { background: var(--bg3); border-radius: var(--radius-sm); padding: 9px 11px; border: 1px solid var(--border); }
+  .tile-lbl { font-size: 10px; color: var(--text3); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 3px; }
+  .tile-val { font-size: 14px; font-weight: 700; font-family: var(--mono); }
+  .v-green { color: var(--green); } .v-red { color: var(--red); } .v-amber { color: var(--amber); } .v-blue { color: var(--blue); } .v-plain { color: var(--text); }
+
+  .plan-block { background: var(--bg3); border-radius: var(--radius-sm); border: 1px solid var(--border); overflow: hidden; margin-bottom: 8px; }
+  .plan-title { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text3); padding: 7px 12px; border-bottom: 1px solid var(--border); font-family: var(--mono); }
+  .plan-row { display: flex; justify-content: space-between; align-items: baseline; padding: 6px 12px; border-bottom: 1px solid var(--border); gap: 10px; }
+  .plan-row:last-child { border-bottom: none; }
+  .plan-key { font-size: 12px; color: var(--text2); flex-shrink: 0; }
+  .plan-val { font-size: 12px; font-weight: 600; font-family: var(--mono); text-align: right; }
+
+  /* EMPTY / SKELETON */
+  .empty { text-align: center; padding: 40px 20px; color: var(--text3); font-size: 13px; line-height: 2; }
+  .empty strong { color: var(--text2); display: block; font-size: 15px; }
+  .skel-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 13px 14px; margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+  .skel { background: var(--bg3); border-radius: 4px; animation: pulse 1.3s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
+  .spin { animation: rotate 0.65s linear infinite; display: inline-block; }
+  @keyframes rotate { to { transform: rotate(360deg); } }
+
+  /* MANUAL SEARCH SECTIONS */
+  .ms-section-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+  .ms-section-title  { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--text); }
+  .ms-section-dot    { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .dot-day           { background: var(--green); }
+  .dot-swing         { background: var(--blue); }
+  .ms-section-sub    { font-size: 12px; color: var(--text3); }
+  .ms-hint           { font-size: 11px; color: var(--text3); }
+  .ms-divider        { border: none; border-top: 1px solid var(--border); margin: 28px 0; }
+  .ms-swing-btn      { background: var(--blue); }
+
+  /* WATCHLIST INPUT */
+  .wl-input-area { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; }
+  .wl-title    { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+  .wl-subtitle { font-size: 12px; color: var(--text3); margin-bottom: 12px; }
+  .wl-textarea {
+    width: 100%; min-height: 100px; background: var(--bg3);
+    border: 1px solid var(--border2); border-radius: var(--radius-sm);
+    color: var(--text); font-family: var(--mono); font-size: 13px;
+    padding: 10px 12px; resize: vertical; outline: none;
+    transition: border-color 0.15s;
+  }
+  .wl-textarea:focus { border-color: var(--blue); }
+  .wl-controls { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; flex-wrap: wrap; gap: 10px; }
+  .wl-mode-group { display: flex; align-items: center; gap: 6px; }
+  .wl-mode-label { font-size: 11px; color: var(--text3); margin-right: 2px; }
+  .wl-mode-btn { padding: 6px 14px; border-radius: var(--radius-sm); border: 1px solid var(--border2); background: var(--bg3); color: var(--text2); font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.1s; }
+  .wl-mode-btn:hover { color: var(--text); border-color: var(--border2); }
+  .wl-mode-btn.active { background: var(--blue-bg); border-color: var(--blue); color: var(--blue); }
+  .wl-analyze-btn { display: flex; align-items: center; gap: 7px; padding: 8px 18px; border-radius: var(--radius-sm); background: var(--blue); color: #fff; font-size: 13px; font-weight: 700; border: none; cursor: pointer; transition: opacity 0.15s; }
+  .wl-analyze-btn:hover    { opacity: 0.85; }
+  .wl-analyze-btn:disabled { background: var(--bg3); color: var(--text3); cursor: default; }
+  .wl-mode-badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 20px; background: var(--purple-bg); color: var(--purple); border: 1px solid rgba(179,157,219,0.2); }
+  .wl-error { background: var(--red-bg); border: 1px solid rgba(255,107,107,0.2); border-radius: var(--radius-sm); padding: 10px 14px; font-size: 12px; color: var(--red); margin-bottom: 8px; font-family: var(--mono); }
+
+  /* EXTENDED HOURS BAR */
+  .ext-bar { display: flex; align-items: center; gap: 12px; padding: 8px 14px; flex-wrap: wrap; border-bottom: 1px solid var(--border); font-family: var(--mono); font-size: 12px; }
+  .ext-up   { background: rgba(61,220,132,0.05); }
+  .ext-down { background: rgba(255,107,107,0.05); }
+  .ext-label { font-size: 10px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: var(--text3); }
+  .ext-price { font-size: 14px; font-weight: 700; }
+  .ext-chg   { font-size: 12px; font-weight: 600; }
+  .ext-vol   { font-size: 11px; color: var(--text3); }
+  .ext-alert { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 20px; background: var(--amber-bg); color: var(--amber); border: 1px solid rgba(255,179,71,0.2); }
+
+  /* SORT BAR */
+  .sort-bar { display: flex; align-items: center; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .sort-label { font-size: 11px; color: var(--text3); margin-right: 2px; }
+  .sort-btn {
+    display: flex; align-items: center; gap: 5px;
+    padding: 5px 12px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border); background: var(--bg2);
+    color: var(--text2); font-size: 11px; font-weight: 500;
+    cursor: pointer; font-family: var(--mono); transition: all 0.1s;
+    white-space: nowrap;
+  }
+  .sort-btn:hover { border-color: var(--border2); color: var(--text); }
+  .sort-btn.active { border-color: var(--blue); color: var(--blue); background: var(--blue-bg); }
+  .sort-arrow { font-size: 10px; }
+
+  /* TOAST */
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--bg3); border: 1px solid var(--border2); border-radius: var(--radius); padding: 10px 16px; font-size: 13px; color: var(--text); opacity: 0; transform: translateY(8px); transition: all 0.18s; pointer-events: none; z-index: 999; max-width: 320px; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <span class="app-title">TRADING SCREENER</span>
+    <span class="session-pill pill-after" id="session-pill">AFTER HOURS</span>
+  </div>
+  <div class="topbar-right">
+    <span class="clock" id="clock"></span>
+    <span class="last-run" id="last-run"></span>
+    <button class="run-btn" id="run-btn" onclick="runScreener()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      Run Screener
+    </button>
+  </div>
+</div>
+
+<div class="main">
+  <div class="toolbar">
+    <div class="tabs">
+      <button class="tab-btn active" onclick="showTab('day')"       id="tab-day-btn">    Day Trades  <span class="tab-count" id="cnt-day">—</span></button>
+      <button class="tab-btn"        onclick="showTab('squeeze')"    id="tab-squeeze-btn">Squeezes    <span class="tab-count" id="cnt-sq">—</span></button>
+      <button class="tab-btn"        onclick="showTab('swing')"      id="tab-swing-btn">  Swings      <span class="tab-count" id="cnt-sw">—</span></button>
+      <button class="tab-btn"        onclick="showTab('watchlist')"  id="tab-watchlist-btn">🔍 Manual Search <span class="tab-count" id="cnt-wl">0</span></button>
+    </div>
+    <div class="filter-row">
+      <span class="filter-label">Sector</span>
+      <select class="sector-select" id="sector-filter" onchange="applyFilter()">
+        <option value="">All sectors</option>
+      </select>
+      <span class="clear-filter" id="clear-filter" onclick="clearFilter()">Clear</span>
+      <span class="result-count" id="result-count"></span>
+    </div>
+  </div>
+
+  <div class="sort-bar">
+    <span class="sort-label">Sort</span>
+    <button class="sort-btn" id="sort-ticker" onclick="setSort('ticker')">Ticker <span class="sort-arrow" id="arr-ticker">↕</span></button>
+    <button class="sort-btn" id="sort-price"  onclick="setSort('price')"> Price  <span class="sort-arrow" id="arr-price">↕</span></button>
+    <button class="sort-btn" id="sort-change" onclick="setSort('change')">% Change <span class="sort-arrow" id="arr-change">↕</span></button>
+    <button class="sort-btn" id="sort-relvol" onclick="setSort('relvol')">Rel Vol <span class="sort-arrow" id="arr-relvol">↕</span></button>
+    <button class="sort-btn" id="sort-rval"   onclick="setSort('rval')">R Value <span class="sort-arrow" id="arr-rval">↕</span></button>
+  </div>
+
+  <div id="pane-day">    <div class="empty"><strong>Ready to scan</strong>Hit "Run Screener" to fetch live candidates.</div></div>
+  <div id="pane-squeeze" style="display:none"><div class="empty"><strong>Ready to scan</strong>Hit "Run Screener" to fetch live candidates.</div></div>
+  <div id="pane-swing"   style="display:none"><div class="empty"><strong>Ready to scan</strong>Hit "Run Screener" to fetch live candidates.</div></div>
+  <div id="pane-watchlist" style="display:none">
+
+    <!-- DAY TRADE SECTION -->
+    <div class="ms-section-header">
+      <div class="ms-section-title">
+        <span class="ms-section-dot dot-day"></span>
+        Day Trade Manual Search
+      </div>
+      <span class="ms-section-sub">Enter tickers you want analyzed as day trade setups</span>
+    </div>
+    <div class="wl-input-area">
+      <div class="wl-subtitle">One per line or comma-separated — e.g. AAPL, TSLA, NVDA</div>
+      <textarea class="wl-textarea" id="ms-day-input" placeholder="AAPL&#10;TSLA&#10;NVDA, AMD"></textarea>
+      <div class="wl-controls">
+        <span class="ms-hint">Pulls EMA5/EMA9, VWAP, key levels &amp; trade plan</span>
+        <button class="wl-analyze-btn" id="ms-day-btn" onclick="analyzeSection('day')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          Analyze Day Trades
+        </button>
+      </div>
+    </div>
+    <div id="ms-day-results"></div>
+
+    <div class="ms-divider"></div>
+
+    <!-- SWING SECTION -->
+    <div class="ms-section-header">
+      <div class="ms-section-title">
+        <span class="ms-section-dot dot-swing"></span>
+        Swing Trade Manual Search
+      </div>
+      <span class="ms-section-sub">Enter tickers you want analyzed as swing setups</span>
+    </div>
+    <div class="wl-input-area">
+      <div class="wl-subtitle">One per line or comma-separated — e.g. NVDA, META, AMD</div>
+      <textarea class="wl-textarea" id="ms-swing-input" placeholder="NVDA&#10;META&#10;AMD, MSFT"></textarea>
+      <div class="wl-controls">
+        <span class="ms-hint">Pulls SMA20/50/200, 52-wk levels, daily chart trade plan</span>
+        <button class="wl-analyze-btn ms-swing-btn" id="ms-swing-btn" onclick="analyzeSection('swing')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          Analyze Swings
+        </button>
+      </div>
+    </div>
+    <div id="ms-swing-results"></div>
+
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let activeTab   = 'day';
+let allData     = null;
+let activeSector = '';
+let sortField   = '';
+let sortDir     = 1; // 1 = asc, -1 = desc
+
+// ── Sort ───────────────────────────────────────────────────
+function setSort(field) {
+  if (sortField === field) {
+    sortDir *= -1;
+  } else {
+    sortField = field;
+    sortDir = field === 'change' || field === 'relvol' || field === 'rval' ? -1 : 1;
+  }
+  // Update button styles and arrows
+  ['ticker','price','change','relvol','rval'].forEach(f => {
+    const btn = document.getElementById('sort-' + f);
+    const arr = document.getElementById('arr-' + f);
+    if (f === sortField) {
+      btn.classList.add('active');
+      arr.textContent = sortDir === 1 ? '↑' : '↓';
+    } else {
+      btn.classList.remove('active');
+      arr.textContent = '↕';
+    }
+  });
+  if (allData) renderAll(allData);
+}
+
+function sortCards(cards) {
+  if (!sortField) return cards;
+  return [...cards].sort((a, b) => {
+    let av, bv;
+    if (sortField === 'ticker') {
+      av = a.ticker || ''; bv = b.ticker || '';
+      return sortDir * av.localeCompare(bv);
+    }
+    if (sortField === 'price') {
+      av = parseFloat(a.price) || 0; bv = parseFloat(b.price) || 0;
+    }
+    if (sortField === 'change') {
+      av = parseFloat((a.change || '0').replace('%','').replace('+','')) || 0;
+      bv = parseFloat((b.change || '0').replace('%','').replace('+','')) || 0;
+    }
+    if (sortField === 'relvol') {
+      av = parseFloat((a.relvol || '0').replace('x','')) || 0;
+      bv = parseFloat((b.relvol || '0').replace('x','')) || 0;
+    }
+    if (sortField === 'rval') {
+      // day/squeeze → use plan.rr2 (T2 key high); swings → use plan.rr1 (T1 swing high)
+      av = parseFloat(a.plan?.rr2 || a.plan?.rr1 || 0) || 0;
+      bv = parseFloat(b.plan?.rr2 || b.plan?.rr1 || 0) || 0;
+    }
+    return sortDir * (av - bv);
+  });
+}
+
+// ── Clock ──────────────────────────────────────────────────
+function updateClock() {
+  const et   = new Date(new Date().toLocaleString('en-US', {timeZone:'America/New_York'}));
+  const h = et.getHours(), m = et.getMinutes(), s = et.getSeconds();
+  const ampm = h >= 12 ? 'PM' : 'AM', hh = h % 12 || 12;
+  document.getElementById('clock').textContent =
+    `${String(hh).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')} ${ampm} ET`;
+  const pill = document.getElementById('session-pill');
+  if (h < 9 || (h===9 && m < 30)) { pill.textContent='PRE-MARKET'; pill.className='session-pill pill-pre'; }
+  else if (h < 16)                 { pill.textContent='MARKET OPEN'; pill.className='session-pill pill-open'; }
+  else                             { pill.textContent='AFTER HOURS'; pill.className='session-pill pill-after'; }
+}
+setInterval(updateClock, 1000); updateClock();
+
+// ── Tabs ───────────────────────────────────────────────────
+function showTab(tab) {
+  activeTab = tab;
+  ['day','squeeze','swing','watchlist'].forEach(t => {
+    document.getElementById('pane-' + t).style.display = t === tab ? '' : 'none';
+    document.getElementById('tab-' + t + '-btn').className = 'tab-btn' + (t === tab ? ' active' : '');
+  });
+  updateResultCount();
+}
+
+// ── Sector filter ──────────────────────────────────────────
+function applyFilter() {
+  activeSector = document.getElementById('sector-filter').value;
+  document.getElementById('clear-filter').style.display = activeSector ? 'inline' : 'none';
+  if (!allData) return;
+  renderAll(allData);
+  updateResultCount();
+}
+
+function clearFilter() {
+  activeSector = '';
+  document.getElementById('sector-filter').value = '';
+  document.getElementById('clear-filter').style.display = 'none';
+  if (allData) renderAll(allData);
+  updateResultCount();
+}
+
+function filterCards(cards) {
+  if (!activeSector) return sortCards(cards);
+  return sortCards(cards.filter(c => c.sector === activeSector));
+}
+
+function updateResultCount() {
+  if (!allData) { document.getElementById('result-count').textContent = ''; return; }
+  const map = {day: allData.day, squeeze: allData.squeeze, swing: allData.swing};
+  const cards = filterCards(map[activeTab] || []);
+  const total = filterCards(allData.day).length + filterCards(allData.squeeze).length + filterCards(allData.swing).length;
+  document.getElementById('cnt-day').textContent    = filterCards(allData.day).length;
+  document.getElementById('cnt-sq').textContent     = filterCards(allData.squeeze).length;
+  document.getElementById('cnt-sw').textContent     = filterCards(allData.swing).length;
+  document.getElementById('result-count').textContent = activeSector ? `${total} match` : '';
+}
+
+function populateSectors(sectors) {
+  const sel = document.getElementById('sector-filter');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">All sectors</option>';
+  sectors.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s; opt.textContent = s;
+    if (s === cur) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
+// ── Toast ──────────────────────────────────────────────────
+function toast(msg, ms=3000) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), ms);
+}
+
+// ── Skeletons ──────────────────────────────────────────────
+function skels(n=3) {
+  return Array.from({length:n}, () => `
+    <div class="skel-card">
+      <div class="skel" style="width:50px;height:18px"></div>
+      <div class="skel" style="width:140px;height:13px"></div>
+      <div style="flex:1"></div>
+      <div class="skel" style="width:58px;height:16px"></div>
+      <div class="skel" style="width:46px;height:12px"></div>
+    </div>`).join('');
+}
+
+// ── Toggle expand ──────────────────────────────────────────
+function toggle(id) {
+  const b = document.getElementById('body-' + id);
+  const c = document.getElementById('chev-' + id);
+  const open = b.classList.toggle('open');
+  c.classList.toggle('open', open);
+}
+
+// ── Format helpers ─────────────────────────────────────────
+const fmt = v => v != null ? '$' + parseFloat(v).toFixed(2) : '—';
+const rr  = v => v > 0 ? '1:' + parseFloat(v).toFixed(1) + 'R' : '—';
+
+// ── News HTML ──────────────────────────────────────────────
+function newsHTML(news) {
+  if (!news || news.length === 0)
+    return '<div class="news-empty">No recent news found.</div>';
+  return news.map(n => `
+    <div class="news-item">
+      <div class="news-headline">
+        ${n.url
+          ? `<a href="${n.url}" target="_blank" rel="noopener">${n.title}</a>`
+          : n.title}
+      </div>
+      <div class="news-meta">
+        <span>${n.source || 'Unknown'}</span>
+        ${n.time ? `<span>${n.time}</span>` : ''}
+      </div>
+    </div>`).join('');
+}
+
+// ── Extended hours tile ────────────────────────────────────
+function extHTML(ext) {
+  if (!ext || ext.ext_price == null) return '';
+  const session = ext.ext_session;
+  if (session === 'open') return '';   // during market hours skip — Finviz shows it
+  const label   = session === 'premarket' ? 'Pre-market' : 'After Hours';
+  const pct     = ext.ext_change_pct;
+  const chg     = ext.ext_change;
+  const isUp    = pct >= 0;
+  const pctStr  = (isUp ? '+' : '') + pct.toFixed(2) + '%';
+  const chgStr  = (isUp ? '+' : '') + chg.toFixed(2);
+  const valCls  = isUp ? 'v-green' : 'v-red';
+  const vol     = ext.ext_volume ? ext.ext_volume.toLocaleString() : '—';
+  return `
+    <div class="ext-bar ${isUp ? 'ext-up' : 'ext-down'}">
+      <span class="ext-label">${label}</span>
+      <span class="ext-price ${valCls}">$${ext.ext_price.toFixed(2)}</span>
+      <span class="ext-chg ${valCls}">${chgStr} &nbsp;(${pctStr})</span>
+      <span class="ext-vol">${vol} shares</span>
+      ${Math.abs(pct) >= 5 ? `<span class="ext-alert">${isUp ? '🚀 GAP UP' : '📉 GAP DOWN'} ${Math.abs(pct).toFixed(1)}%</span>` : ''}
+    </div>`;
+}
+
+// ── Day / Squeeze card HTML ────────────────────────────────
+function dayCardHTML(d, idx, prefix) {
+  const id      = prefix + idx;
+  const chgCls  = d.pos ? 'chg-pos' : 'chg-neg';
+  const emaBadge = d.ema_ok
+    ? '<span class="badge b-green">EMA5 &gt; EMA9 ✓</span>'
+    : '<span class="badge b-red">EMA5 &lt; EMA9</span>';
+  const sqBadge = d.squeeze ? '<span class="badge b-amber">⚡ SQUEEZE</span>' : '';
+  const newsCnt = d.news ? d.news.length : 0;
+  const newsBadge = `<span class="news-badge ${newsCnt===0?'no-news':''}" onclick="event.stopPropagation();toggleNews('${id}')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a4 4 0 0 1-4 4"/><path d="M10 2v4"/><path d="M8 10h8"/><path d="M8 14h8"/></svg>
+    ${newsCnt} news
+  </span>`;
+  const lvl = d.levels, plan = d.plan;
+  const pmBlock = lvl.pm_high != null ? `
+    <div class="plan-block">
+      <div class="plan-title">Pre-market session</div>
+      <div class="plan-row"><span class="plan-key">PM High</span><span class="plan-val v-green">${fmt(lvl.pm_high)}</span></div>
+      <div class="plan-row"><span class="plan-key">PM Low</span><span class="plan-val v-red">${fmt(lvl.pm_low)}</span></div>
+      <div class="plan-row"><span class="plan-key">PM Open</span><span class="plan-val v-plain">${fmt(lvl.pm_open)}</span></div>
+      <div class="plan-row"><span class="plan-key">PM Last</span><span class="plan-val v-plain">${fmt(lvl.pm_last)}</span></div>
+    </div>` : '';
+
+  return `
+  <div class="card">
+    <div class="card-header" onclick="toggle('${id}')">
+      <div class="card-left">
+        <span class="sym">${d.ticker}</span>
+        <span class="co">${d.company}</span>
+        <span class="ind">${d.industry || d.sector || ''}</span>
+        ${sqBadge}${emaBadge}${newsBadge}
+      </div>
+      <div class="card-right">
+        <span class="price-val">$${parseFloat(d.price).toFixed(2)}</span>
+        <span class="${chgCls}">${d.change}</span>
+        <span class="stat">${d.relvol}x</span>
+        <span class="stat">${typeof d.volume==='number'?d.volume.toLocaleString():d.volume}</span>
+        <svg class="chevron" id="chev-${id}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+    </div>
+    <div class="card-body" id="body-${id}">
+      <div class="news-panel" id="news-${id}" style="display:none">
+        <div class="news-panel-title">Recent news — ${d.ticker}</div>
+        ${newsHTML(d.news)}
+      </div>
+      ${extHTML(d.ext)}
+      <div class="card-detail">
+        <div class="grid-4">
+          <div class="tile"><div class="tile-lbl">${lvl.label} high</div><div class="tile-val v-green">${fmt(lvl.key_high)}</div></div>
+          <div class="tile"><div class="tile-lbl">${lvl.label} low</div><div class="tile-val v-red">${fmt(lvl.key_low)}</div></div>
+          <div class="tile"><div class="tile-lbl">VWAP proxy</div><div class="tile-val v-amber">${fmt(lvl.vwap)}</div></div>
+          <div class="tile"><div class="tile-lbl">Prev close</div><div class="tile-val v-plain">${fmt(lvl.prev_close)}</div></div>
+        </div>
+        <div class="plan-block">
+          <div class="plan-title">Trade plan</div>
+          <div class="plan-row"><span class="plan-key">Entry zone</span><span class="plan-val v-blue">${fmt(plan.entry_low)} – ${fmt(plan.entry_high)} ← EMA5 / ${plan.entry_ref}</span></div>
+          <div class="plan-row"><span class="plan-key">Stop</span><span class="plan-val v-red">${fmt(plan.stop)} ← below EMA9</span></div>
+          <div class="plan-row"><span class="plan-key">Target 1</span><span class="plan-val v-green">${fmt(plan.t1)} &nbsp;(${rr(plan.rr1)})</span></div>
+          <div class="plan-row"><span class="plan-key">Target 2</span><span class="plan-val v-green">${fmt(plan.t2)} &nbsp;(${rr(plan.rr2)}) ← key high</span></div>
+        </div>
+        <div class="plan-block">
+          <div class="plan-title">EMAs</div>
+          <div class="plan-row"><span class="plan-key">EMA5</span><span class="plan-val v-plain">${fmt(d.emas.ema5)}</span></div>
+          <div class="plan-row"><span class="plan-key">EMA9</span><span class="plan-val v-plain">${fmt(d.emas.ema9)}</span></div>
+        </div>
+        ${pmBlock}
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Swing card HTML ────────────────────────────────────────
+function swingCardHTML(d, idx) {
+  const id      = 'sw' + idx;
+  const chgCls  = d.pos ? 'chg-pos' : 'chg-neg';
+  const emaBadge = d.ema_ok
+    ? '<span class="badge b-green">EMA5 &gt; EMA9 ✓</span>'
+    : '<span class="badge b-red">EMA5 &lt; EMA9</span>';
+  const newsCnt = d.news ? d.news.length : 0;
+  const newsBadge = `<span class="news-badge ${newsCnt===0?'no-news':''}" onclick="event.stopPropagation();toggleNews('${id}')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a4 4 0 0 1-4 4"/><path d="M10 2v4"/><path d="M8 10h8"/><path d="M8 14h8"/></svg>
+    ${newsCnt} news
+  </span>`;
+  const lvl = d.levels, plan = d.plan;
+
+  return `
+  <div class="card">
+    <div class="card-header" onclick="toggle('${id}')">
+      <div class="card-left">
+        <span class="sym">${d.ticker}</span>
+        <span class="co">${d.company}</span>
+        <span class="ind">${d.industry || d.sector || ''}</span>
+        <span class="badge b-blue">200MA Rising ↑</span>
+        ${emaBadge}${newsBadge}
+      </div>
+      <div class="card-right">
+        <span class="price-val">$${parseFloat(d.price).toFixed(2)}</span>
+        <span class="${chgCls}">${d.change}</span>
+        <span class="stat">${d.relvol}x</span>
+        <span class="stat">${typeof d.volume==='number'?d.volume.toLocaleString():d.volume}</span>
+        <svg class="chevron" id="chev-${id}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+    </div>
+    <div class="card-body" id="body-${id}">
+      <div class="news-panel" id="news-${id}" style="display:none">
+        <div class="news-panel-title">Recent news — ${d.ticker}</div>
+        ${newsHTML(d.news)}
+      </div>
+      <div class="card-detail">
+        <div class="grid-4">
+          <div class="tile"><div class="tile-lbl">52-wk high</div><div class="tile-val v-green">${fmt(lvl.week52_high)}</div></div>
+          <div class="tile"><div class="tile-lbl">52-wk low</div><div class="tile-val v-red">${fmt(lvl.week52_low)}</div></div>
+          <div class="tile"><div class="tile-lbl">20d swing high</div><div class="tile-val v-plain">${fmt(lvl.swing_high_20d)}</div></div>
+          <div class="tile"><div class="tile-lbl">20d swing low</div><div class="tile-val v-plain">${fmt(lvl.swing_low_20d)}</div></div>
+        </div>
+        <div class="grid-4">
+          <div class="tile"><div class="tile-lbl">SMA20</div><div class="tile-val v-plain">${fmt(lvl.sma20)}</div></div>
+          <div class="tile"><div class="tile-lbl">SMA50</div><div class="tile-val v-plain">${fmt(lvl.sma50)}</div></div>
+          <div class="tile"><div class="tile-lbl">SMA200</div><div class="tile-val v-green">${fmt(lvl.sma200)}</div></div>
+          <div class="tile"><div class="tile-lbl">EMA9</div><div class="tile-val v-plain">${fmt(d.emas.ema9)}</div></div>
+        </div>
+        <div class="plan-block">
+          <div class="plan-title">Trade plan — daily chart</div>
+          <div class="plan-row"><span class="plan-key">Entry near ${plan.support_label}</span><span class="plan-val v-blue">${fmt(plan.entry)}</span></div>
+          <div class="plan-row"><span class="plan-key">Stop</span><span class="plan-val v-red">${fmt(plan.stop)} &nbsp;(−3% below ${plan.support_label})</span></div>
+          <div class="plan-row"><span class="plan-key">Target 1</span><span class="plan-val v-green">${fmt(plan.t1)} &nbsp;(${rr(plan.rr1)}) ← 20d swing high</span></div>
+          <div class="plan-row"><span class="plan-key">Target 2</span><span class="plan-val v-green">${fmt(plan.t2)} &nbsp;(${rr(plan.rr2)}) ← 52-wk high</span></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Toggle news panel ──────────────────────────────────────
+function toggleNews(id) {
+  const panel = document.getElementById('news-' + id);
+  const body  = document.getElementById('body-' + id);
+  const chev  = document.getElementById('chev-' + id);
+  if (!body.classList.contains('open')) {
+    body.classList.add('open');
+    chev.classList.add('open');
+  }
+  panel.style.display = panel.style.display === 'none' ? '' : 'none';
+}
+
+// ── Render panes ───────────────────────────────────────────
+function renderPane(paneId, cards, buildFn, emptyMsg) {
+  const pane = document.getElementById(paneId);
+  const filtered = filterCards(cards);
+  if (!filtered.length) {
+    pane.innerHTML = `<div class="empty"><strong>No candidates</strong>${emptyMsg}</div>`;
+    return;
+  }
+  pane.innerHTML = filtered.map((d, i) => buildFn(d, i)).join('');
+}
+
+function renderAll(data) {
+  const hdr = type => `<div class="section-hdr">${type}</div>`;
+  document.getElementById('pane-day').innerHTML     = hdr('Day trade candidates — EMA5/EMA9 momentum — 1M+ vol') + (filterCards(data.day).length ? filterCards(data.day).map((d,i)=>dayCardHTML(d,i,'dt')).join('') : '<div class="empty"><strong>No candidates</strong>Try running again or adjusting filters.</div>');
+  document.getElementById('pane-squeeze').innerHTML = hdr('Squeeze candidates — float &lt;20M — short float &gt;20%') + (filterCards(data.squeeze).length ? filterCards(data.squeeze).map((d,i)=>dayCardHTML(d,i,'sq')).join('') : '<div class="empty"><strong>No squeeze setups</strong>No high-short-interest low-float stocks with volume right now.</div>');
+  document.getElementById('pane-swing').innerHTML   = hdr('Swing candidates — daily chart — 200MA rising confirmed') + (filterCards(data.swing).length ? filterCards(data.swing).map((d,i)=>swingCardHTML(d,i)).join('') : '<div class="empty"><strong>No swing candidates</strong>No confirmed rising 200MA setups right now.</div>');
+  updateResultCount();
+}
+
+// ── Manual Search ──────────────────────────────────────────
+function parseTickers(raw) {
+  return raw.split(/[\n,]+/)
+    .map(t => t.trim().toUpperCase())
+    .filter(t => t.length > 0 && t.length <= 6 && /^[A-Z.]+$/.test(t));
+}
+
+async function analyzeSection(mode) {
+  const inputId  = mode === 'day' ? 'ms-day-input'   : 'ms-swing-input';
+  const btnId    = mode === 'day' ? 'ms-day-btn'      : 'ms-swing-btn';
+  const resultId = mode === 'day' ? 'ms-day-results'  : 'ms-swing-results';
+  const label    = mode === 'day' ? 'Day Trades'      : 'Swings';
+
+  const raw     = document.getElementById(inputId).value;
+  const tickers = parseTickers(raw);
+  if (!tickers.length) { toast('Enter at least one ticker symbol'); return; }
+
+  const btn     = document.getElementById(btnId);
+  const results = document.getElementById(resultId);
+  btn.disabled  = true;
+  btn.innerHTML = `<svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Analyzing ${tickers.length} ticker${tickers.length>1?'s':''}...`;
+  results.innerHTML = tickers.map(() => skels(1)).join('');
+
+  try {
+    const res  = await fetch('/api/analyze', {
+      method:  'POST',
+      headers: {'Content-Type': 'application/json'},
+      body:    JSON.stringify({tickers, mode})
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+
+    // Persist to localStorage per section
+    localStorage.setItem('ms_' + mode + '_tickers', raw);
+
+    // Update badge count (sum of both sections)
+    const otherKey = mode === 'day' ? 'ms-swing-input' : 'ms-day-input';
+    const otherRaw = document.getElementById(otherKey).value;
+    const otherCount = parseTickers(otherRaw).length;
+    document.getElementById('cnt-wl').textContent = tickers.length + otherCount;
+
+    if (!data.cards.length) {
+      results.innerHTML = '<div class="empty"><strong>No results</strong>Check your ticker symbols.</div>';
+    } else {
+      results.innerHTML =
+        `<div class="section-hdr">Manual ${label} analysis — ${tickers.length} ticker${tickers.length>1?'s':''}</div>` +
+        data.cards.map((d, i) => {
+          if (d.error) return `<div class="wl-error">❌ ${d.ticker} — ${d.error}</div>`;
+          return mode === 'swing'
+            ? swingCardHTML(d, 'ms' + mode + i)
+            : dayCardHTML(d, 'ms' + mode + i, 'ms');
+        }).join('');
+    }
+
+    toast(`✓ ${label} — analyzed ${tickers.length} ticker${tickers.length>1?'s':''}`);
+
+  } catch(err) {
+    console.error(err);
+    results.innerHTML = '<div class="empty"><strong>Error</strong>Make sure app.py is running.</div>';
+    toast('Analysis failed — is app.py running?');
+  }
+
+  btn.disabled  = false;
+  btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg> Analyze ${label}`;
+}
+
+// Restore saved tickers on load
+window.addEventListener('load', () => {
+  const savedDay   = localStorage.getItem('ms_day_tickers');
+  const savedSwing = localStorage.getItem('ms_swing_tickers');
+  if (savedDay)   document.getElementById('ms-day-input').value   = savedDay;
+  if (savedSwing) document.getElementById('ms-swing-input').value = savedSwing;
+});
+async function runScreener() {
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+  btn.innerHTML = `<svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Scanning...`;
+  ['day','squeeze','swing'].forEach(t => {
+    document.getElementById('pane-' + t).innerHTML = skels(3);
+  });
+  try {
+    const res  = await fetch('/api/run');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    allData    = data;
+    populateSectors(data.sectors || []);
+    renderAll(data);
+    const et  = new Date(new Date().toLocaleString('en-US', {timeZone:'America/New_York'}));
+    const h = et.getHours(), m = et.getMinutes(), s = et.getSeconds();
+    const hh = h%12||12, ampm = h>=12?'PM':'AM';
+    document.getElementById('last-run').textContent =
+      `Last run ${String(hh).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')} ${ampm} ET`;
+    const total = data.day.length + data.squeeze.length + data.swing.length;
+    toast(`✓ ${total} candidates found across all screens`);
+  } catch(err) {
+    console.error(err);
+    ['day','squeeze','swing'].forEach(t => {
+      document.getElementById('pane-' + t).innerHTML =
+        `<div class="empty"><strong>Connection error</strong>Make sure app.py is running in your terminal.</div>`;
+    });
+    toast('Error — is app.py running?');
+  }
+  btn.disabled = false;
+  btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="14" height="14"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Run Screener`;
+}
+</script>
+</body>
+</html>
