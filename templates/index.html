@@ -82,6 +82,29 @@
   .co   { font-size: 12px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
   .ind  { font-size: 11px; color: var(--text3); white-space: nowrap; }
 
+  /* SETUP SCORE BADGE */
+  .score-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 700; padding: 3px 10px;
+    border-radius: 20px; white-space: nowrap; letter-spacing: 0.03em;
+    flex-shrink: 0;
+  }
+  .score-strong { background: var(--green-bg); color: var(--green); border: 1px solid rgba(61,220,132,0.25); }
+  .score-decent { background: var(--amber-bg); color: var(--amber); border: 1px solid rgba(255,179,71,0.25); }
+  .score-skip   { background: var(--red-bg);   color: var(--red);   border: 1px solid rgba(255,107,107,0.25); }
+
+  .score-breakdown {
+    background: var(--bg); border-radius: var(--radius-sm);
+    border: 1px solid var(--border); padding: 10px 12px;
+    margin-bottom: 10px;
+  }
+  .score-breakdown-title { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text3); margin-bottom: 8px; font-family: var(--mono); }
+  .score-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; font-size: 12px; }
+  .score-row-label { color: var(--text2); }
+  .score-row-val { font-weight: 600; font-family: var(--mono); }
+  .score-row-val.hit  { color: var(--green); }
+  .score-row-val.miss { color: var(--text3); }
+
   .badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 20px; letter-spacing: 0.03em; white-space: nowrap; }
   .b-green  { background: var(--green-bg);  color: var(--green);  border: 1px solid rgba(61,220,132,0.18); }
   .b-red    { background: var(--red-bg);    color: var(--red);    border: 1px solid rgba(255,107,107,0.18); }
@@ -377,6 +400,7 @@
     <button class="sort-btn" id="sort-change" onclick="setSort('change')">% Change <span class="sort-arrow" id="arr-change">↕</span></button>
     <button class="sort-btn" id="sort-relvol" onclick="setSort('relvol')">Rel Vol <span class="sort-arrow" id="arr-relvol">↕</span></button>
     <button class="sort-btn" id="sort-rval"   onclick="setSort('rval')">R Value <span class="sort-arrow" id="arr-rval">↕</span></button>
+    <button class="sort-btn" id="sort-score"  onclick="setSort('score')">Score <span class="sort-arrow" id="arr-score">↕</span></button>
   </div>
 
   <div class="fav-bar" id="fav-bar">
@@ -455,10 +479,10 @@ function setSort(field) {
     sortDir *= -1;
   } else {
     sortField = field;
-    sortDir = field === 'change' || field === 'relvol' || field === 'rval' ? -1 : 1;
+    sortDir = field === 'change' || field === 'relvol' || field === 'rval' || field === 'score' ? -1 : 1;
   }
   // Update button styles and arrows
-  ['ticker','price','change','relvol','rval'].forEach(f => {
+  ['ticker','price','change','relvol','rval','score'].forEach(f => {
     const btn = document.getElementById('sort-' + f);
     const arr = document.getElementById('arr-' + f);
     if (f === sortField) {
@@ -495,6 +519,10 @@ function sortCards(cards) {
       // day/squeeze → use plan.rr2 (T2 key high); swings → use plan.rr1 (T1 swing high)
       av = parseFloat(a.plan?.rr2 || a.plan?.rr1 || 0) || 0;
       bv = parseFloat(b.plan?.rr2 || b.plan?.rr1 || 0) || 0;
+    }
+    if (sortField === 'score') {
+      av = a._score != null ? a._score : (a.ema_ok ? 5 : 0);
+      bv = b._score != null ? b._score : (b.ema_ok ? 5 : 0);
     }
     return sortDir * (av - bv);
   });
@@ -729,6 +757,137 @@ function fmtRelVol(v) {
   return n.toFixed(1) + 'x';
 }
 
+// ── Setup Scoring ──────────────────────────────────────────
+function scoreDayTrade(d) {
+  const rows = [];
+  let score = 0;
+
+  // EMA alignment
+  if (d.ema_ok) {
+    score += 2; rows.push({label: 'EMA5 > EMA9', val: '+2', hit: true});
+  } else {
+    rows.push({label: 'EMA5 > EMA9', val: '0', hit: false});
+  }
+
+  // Relative volume
+  const rv = parseFloat(d.relvol) || 0;
+  if (rv >= 3) {
+    score += 2; rows.push({label: `Rel Vol ${rv}x (≥3x)`, val: '+2', hit: true});
+  } else if (rv >= 2) {
+    score += 1; rows.push({label: `Rel Vol ${rv}x (≥2x)`, val: '+1', hit: true});
+  } else {
+    rows.push({label: `Rel Vol ${rv}x (need ≥2x)`, val: '0', hit: false});
+  }
+
+  // R:R on T2
+  const rr2 = parseFloat(d.plan?.rr2) || 0;
+  if (rr2 >= 3) {
+    score += 2; rows.push({label: `R:R ${rr2}:1 (≥3:1)`, val: '+2', hit: true});
+  } else if (rr2 >= 2) {
+    score += 1; rows.push({label: `R:R ${rr2}:1 (≥2:1)`, val: '+1', hit: true});
+  } else {
+    rows.push({label: `R:R ${rr2}:1 (need ≥2:1)`, val: '0', hit: false});
+  }
+
+  // Extended hours move
+  const extPct = Math.abs(parseFloat(d.ext?.ext_change_pct) || 0);
+  if (extPct >= 5) {
+    score += 2; rows.push({label: `Extended hrs move ${extPct.toFixed(1)}% (≥5%)`, val: '+2', hit: true});
+  } else if (extPct >= 2) {
+    score += 1; rows.push({label: `Extended hrs move ${extPct.toFixed(1)}% (≥2%)`, val: '+1', hit: true});
+  } else {
+    rows.push({label: `Extended hrs move ${extPct.toFixed(1)}% (need ≥2%)`, val: '0', hit: false});
+  }
+
+  // Squeeze bonus
+  if (d.squeeze) {
+    score += 1; rows.push({label: 'Short squeeze candidate', val: '+1', hit: true});
+  }
+
+  // Volume > 5M
+  const vol = typeof d.volume === 'number' ? d.volume : parseFloat(String(d.volume).replace(/,/g,'')) || 0;
+  if (vol >= 5e6) {
+    score += 1; rows.push({label: `Volume ${fmtVol(vol)} (≥5M)`, val: '+1', hit: true});
+  } else {
+    rows.push({label: `Volume ${fmtVol(vol)} (need ≥5M)`, val: '0', hit: false});
+  }
+
+  return {score: Math.min(score, 10), rows};
+}
+
+function scoreSwing(d) {
+  const rows = [];
+  let score = 0;
+
+  // EMA alignment
+  if (d.ema_ok) {
+    score += 2; rows.push({label: 'EMA5 > EMA9', val: '+2', hit: true});
+  } else {
+    rows.push({label: 'EMA5 > EMA9', val: '0', hit: false});
+  }
+
+  // 200MA rising
+  if (d.sma200_rising) {
+    score += 2; rows.push({label: '200MA rising', val: '+2', hit: true});
+  } else {
+    rows.push({label: '200MA rising', val: '0', hit: false});
+  }
+
+  // Price vs SMAs
+  const price  = parseFloat(d.price) || 0;
+  const sma50  = parseFloat(d.levels?.sma50) || 0;
+  const sma20  = parseFloat(d.levels?.sma20) || 0;
+  if (sma50 > 0 && price > sma50) {
+    score += 1; rows.push({label: 'Price above SMA50', val: '+1', hit: true});
+  } else {
+    rows.push({label: 'Price above SMA50', val: '0', hit: false});
+  }
+  if (sma20 > 0 && price > sma20) {
+    score += 1; rows.push({label: 'Price above SMA20', val: '+1', hit: true});
+  } else {
+    rows.push({label: 'Price above SMA20', val: '0', hit: false});
+  }
+
+  // R:R on T1
+  const rr1 = parseFloat(d.plan?.rr1) || 0;
+  if (rr1 >= 3) {
+    score += 2; rows.push({label: `R:R ${rr1}:1 (≥3:1)`, val: '+2', hit: true});
+  } else if (rr1 >= 2) {
+    score += 1; rows.push({label: `R:R ${rr1}:1 (≥2:1)`, val: '+1', hit: true});
+  } else {
+    rows.push({label: `R:R ${rr1}:1 (need ≥2:1)`, val: '0', hit: false});
+  }
+
+  // Rel vol
+  const rv = parseFloat(d.relvol) || 0;
+  if (rv >= 1.5) {
+    score += 1; rows.push({label: `Rel Vol ${rv}x (≥1.5x)`, val: '+1', hit: true});
+  } else {
+    rows.push({label: `Rel Vol ${rv}x (need ≥1.5x)`, val: '0', hit: false});
+  }
+
+  return {score: Math.min(score, 10), rows};
+}
+
+function scoreBadgeHTML(score) {
+  let cls, label;
+  if (score >= 7)      { cls = 'score-strong'; label = `🟢 ${score}/10 Strong`; }
+  else if (score >= 4) { cls = 'score-decent'; label = `🟡 ${score}/10 Decent`; }
+  else                 { cls = 'score-skip';   label = `🔴 ${score}/10 Skip`; }
+  return `<span class="score-badge ${cls}">${label}</span>`;
+}
+
+function scoreBreakdownHTML(rows) {
+  return `<div class="score-breakdown">
+    <div class="score-breakdown-title">Setup score breakdown</div>
+    ${rows.map(r => `
+      <div class="score-row">
+        <span class="score-row-label">${r.label}</span>
+        <span class="score-row-val ${r.hit ? 'hit' : 'miss'}">${r.val}</span>
+      </div>`).join('')}
+  </div>`;
+}
+
 // ── Chart buttons ──────────────────────────────────────────
 const chartIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`;
 
@@ -817,6 +976,10 @@ function dayCardHTML(d, idx, prefix) {
       <div class="plan-row"><span class="plan-key">PM Last</span><span class="plan-val v-plain">${fmt(lvl.pm_last)}</span></div>
     </div>` : '';
 
+  const scored  = scoreDayTrade(d);
+  const score   = scored.score;
+  d._score      = score; // cache for sort
+
   return `
   <div class="card ${favorites.has(d.ticker) ? 'favorited' : ''}" id="card-${id}">
     <div class="card-header" onclick="toggle('${id}')">
@@ -827,6 +990,7 @@ function dayCardHTML(d, idx, prefix) {
         <span class="sym">${d.ticker}</span>
         <span class="co">${d.company}</span>
         <span class="ind">${d.industry || d.sector || ''}</span>
+        ${scoreBadgeHTML(score)}
         ${sqBadge}${emaBadge}${newsBadge}${dayChartBtns(d.ticker)}
       </div>
       <div class="card-right">
@@ -844,6 +1008,7 @@ function dayCardHTML(d, idx, prefix) {
       </div>
       ${extHTML(d.ext)}
       <div class="card-detail">
+        ${scoreBreakdownHTML(scored.rows)}
         <div class="grid-4">
           <div class="tile"><div class="tile-lbl">${lvl.label} high</div><div class="tile-val v-green">${fmt(lvl.key_high)}</div></div>
           <div class="tile"><div class="tile-lbl">${lvl.label} low</div><div class="tile-val v-red">${fmt(lvl.key_low)}</div></div>
@@ -885,6 +1050,10 @@ function swingCardHTML(d, idx) {
   </span>`;
   const lvl = d.levels, plan = d.plan;
 
+  const scored  = scoreSwing(d);
+  const score   = scored.score;
+  d._score      = score; // cache for sort
+
   return `
   <div class="card ${favorites.has(d.ticker) ? 'favorited' : ''}" id="card-${id}">
     <div class="card-header" onclick="toggle('${id}')">
@@ -895,6 +1064,7 @@ function swingCardHTML(d, idx) {
         <span class="sym">${d.ticker}</span>
         <span class="co">${d.company}</span>
         <span class="ind">${d.industry || d.sector || ''}</span>
+        ${scoreBadgeHTML(score)}
         <span class="badge b-blue">200MA Rising ↑</span>
         ${emaBadge}${newsBadge}${swingChartBtns(d.ticker)}
       </div>
@@ -912,6 +1082,7 @@ function swingCardHTML(d, idx) {
         ${newsHTML(d.news)}
       </div>
       <div class="card-detail">
+        ${scoreBreakdownHTML(scored.rows)}
         <div class="grid-4">
           <div class="tile"><div class="tile-lbl">52-wk high</div><div class="tile-val v-green">${fmt(lvl.week52_high)}</div></div>
           <div class="tile"><div class="tile-lbl">52-wk low</div><div class="tile-val v-red">${fmt(lvl.week52_low)}</div></div>
