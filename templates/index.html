@@ -40,6 +40,18 @@
   .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; flex-wrap: wrap; }
   .tabs { display: flex; gap: 4px; overflow-x: auto; -webkit-overflow-scrolling: touch; flex-wrap: nowrap; scrollbar-width: none; -ms-overflow-style: none; }
   .tabs::-webkit-scrollbar { display: none; }
+  .tab-group { display: flex; align-items: stretch; flex-shrink: 0; }
+  .tab-group .tab-btn { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+  .tab-run-btn {
+    display: flex; align-items: center; justify-content: center;
+    padding: 0 9px; font-size: 11px; cursor: pointer;
+    border: 1px solid var(--border); border-left: none;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    background: var(--bg2); color: var(--green);
+    transition: all 0.1s; flex-shrink: 0;
+  }
+  .tab-run-btn:hover   { background: var(--green-bg); border-color: rgba(61,220,132,0.3); }
+  .tab-run-btn:disabled { color: var(--text3); cursor: default; }
   .tab-btn { display: flex; align-items: center; gap: 7px; padding: 7px 16px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg2); color: var(--text2); font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.1s; white-space: nowrap; }
   .tab-btn:hover { border-color: var(--border2); color: var(--text); }
   .tab-btn.active { background: var(--bg3); border-color: var(--border2); color: var(--text); }
@@ -368,9 +380,9 @@
   <div class="topbar-right">
     <span class="clock" id="clock"></span>
     <span class="last-run" id="last-run"></span>
-    <button class="run-btn" id="run-btn" onclick="runScreener()">
+    <button class="run-btn" id="run-all-btn" onclick="runAll()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-      Run Screener
+      Run All
     </button>
   </div>
 </div>
@@ -378,10 +390,19 @@
 <div class="main">
   <div class="toolbar">
     <div class="tabs">
-      <button class="tab-btn active" onclick="showTab('day')"       id="tab-day-btn">    Day Trades  <span class="tab-count" id="cnt-day">—</span></button>
-      <button class="tab-btn"        onclick="showTab('squeeze')"    id="tab-squeeze-btn">Squeezes    <span class="tab-count" id="cnt-sq">—</span></button>
-      <button class="tab-btn"        onclick="showTab('swing')"      id="tab-swing-btn">  Swings      <span class="tab-count" id="cnt-sw">—</span></button>
-      <button class="tab-btn"        onclick="showTab('watchlist')"  id="tab-watchlist-btn">🔍 Manual Search <span class="tab-count" id="cnt-wl">0</span></button>
+      <div class="tab-group">
+        <button class="tab-btn active" onclick="showTab('day')" id="tab-day-btn">Day Trades <span class="tab-count" id="cnt-day">—</span></button>
+        <button class="tab-run-btn" id="run-day-btn" onclick="runTab('day')" title="Run Day Trades screener">▶</button>
+      </div>
+      <div class="tab-group">
+        <button class="tab-btn" onclick="showTab('squeeze')" id="tab-squeeze-btn">Squeezes <span class="tab-count" id="cnt-sq">—</span></button>
+        <button class="tab-run-btn" id="run-squeeze-btn" onclick="runTab('squeeze')" title="Run Squeezes screener">▶</button>
+      </div>
+      <div class="tab-group">
+        <button class="tab-btn" onclick="showTab('swing')" id="tab-swing-btn">Swings <span class="tab-count" id="cnt-sw">—</span></button>
+        <button class="tab-run-btn" id="run-swing-btn" onclick="runTab('swing')" title="Run Swings screener">▶</button>
+      </div>
+      <button class="tab-btn" onclick="showTab('watchlist')" id="tab-watchlist-btn">🔍 Manual Search <span class="tab-count" id="cnt-wl">0</span></button>
     </div>
     <div class="filter-row">
       <span class="filter-label">Sector</span>
@@ -991,6 +1012,7 @@ function dayCardHTML(d, idx, prefix) {
         <span class="co">${d.company}</span>
         <span class="ind">${d.industry || d.sector || ''}</span>
         ${scoreBadgeHTML(score)}
+        ${d.data_source === 'TradingView (live)' ? '<span class="badge b-green" title="Live TradingView data">📡 Live</span>' : '<span class="badge" style="background:var(--bg3);color:var(--text3);border:1px solid var(--border)" title="Delayed yfinance data">⏱ Delayed</span>'}
         ${sqBadge}${emaBadge}${newsBadge}${dayChartBtns(d.ticker)}
       </div>
       <div class="card-right">
@@ -1014,13 +1036,23 @@ function dayCardHTML(d, idx, prefix) {
           <div class="tile"><div class="tile-lbl">${lvl.label} low</div><div class="tile-val v-red">${fmt(lvl.key_low)}</div></div>
           <div class="tile"><div class="tile-lbl">VWAP proxy</div><div class="tile-val v-amber">${fmt(lvl.vwap)}</div></div>
           <div class="tile"><div class="tile-lbl">Prev close</div><div class="tile-val v-plain">${fmt(lvl.prev_close)}</div></div>
+          <div class="tile"><div class="tile-lbl">6-month high</div><div class="tile-val v-green">${fmt(lvl.high_6m)}</div></div>
+          <div class="tile"><div class="tile-lbl">6-month low</div><div class="tile-val v-red">${fmt(lvl.low_6m)}</div></div>
+          <div class="tile"><div class="tile-lbl">20d range high</div><div class="tile-val v-plain">${fmt(lvl.high_20d)}</div></div>
+          <div class="tile"><div class="tile-lbl">20d range low</div><div class="tile-val v-plain">${fmt(lvl.low_20d)}</div></div>
         </div>
+        ${lvl.swing_highs && lvl.swing_highs.length > 0 ? `
+        <div class="plan-block">
+          <div class="plan-title">Key swing highs above price</div>
+          ${lvl.swing_highs.map((h, i) => `<div class="plan-row"><span class="plan-key">Swing high ${i+1}</span><span class="plan-val v-green">${fmt(h)}</span></div>`).join('')}
+        </div>` : ''}
         <div class="plan-block">
           <div class="plan-title">Trade plan</div>
-          <div class="plan-row"><span class="plan-key">Entry zone</span><span class="plan-val v-blue">${fmt(plan.entry_low)} – ${fmt(plan.entry_high)} ← EMA5 / ${plan.entry_ref}</span></div>
-          <div class="plan-row"><span class="plan-key">Stop</span><span class="plan-val v-red">${fmt(plan.stop)} ← below EMA9</span></div>
-          <div class="plan-row"><span class="plan-key">Target 1</span><span class="plan-val v-green">${fmt(plan.t1)} &nbsp;(${rr(plan.rr1)})</span></div>
-          <div class="plan-row"><span class="plan-key">Target 2</span><span class="plan-val v-green">${fmt(plan.t2)} &nbsp;(${rr(plan.rr2)}) ← key high</span></div>
+          <div class="plan-row"><span class="plan-key">Entry zone</span><span class="plan-val v-blue">${fmt(plan.entry_low)} – ${fmt(plan.entry_high)} ← ${plan.entry_ref}</span></div>
+          <div class="plan-row"><span class="plan-key">Stop</span><span class="plan-val v-red">${fmt(plan.stop)} ← ${plan.stop_ref || 'below EMA9'}</span></div>
+          <div class="plan-row"><span class="plan-key">Target 1</span><span class="plan-val v-green">${fmt(plan.t1)} &nbsp;(${rr(plan.rr1)}) ← nearest swing high</span></div>
+          <div class="plan-row"><span class="plan-key">Target 2</span><span class="plan-val v-green">${fmt(plan.t2)} &nbsp;(${rr(plan.rr2)}) ← ${lvl.label} high</span></div>
+          ${plan.t3 ? `<div class="plan-row"><span class="plan-key">Target 3</span><span class="plan-val v-green">${fmt(plan.t3)} &nbsp;(${rr(plan.rr3)}) ← 6-month high</span></div>` : ''}
         </div>
         <div class="plan-block">
           <div class="plan-title">EMAs &amp; Moving Averages</div>
@@ -1065,6 +1097,7 @@ function swingCardHTML(d, idx) {
         <span class="co">${d.company}</span>
         <span class="ind">${d.industry || d.sector || ''}</span>
         ${scoreBadgeHTML(score)}
+        ${d.data_source === 'TradingView (live)' ? '<span class="badge b-green" title="Live TradingView data">📡 Live</span>' : '<span class="badge" style="background:var(--bg3);color:var(--text3);border:1px solid var(--border)" title="Delayed yfinance data">⏱ Delayed</span>'}
         <span class="badge b-blue">200MA Rising ↑</span>
         ${emaBadge}${newsBadge}${swingChartBtns(d.ticker)}
       </div>
@@ -1212,54 +1245,144 @@ window.addEventListener('load', () => {
   if (savedSwing) document.getElementById('ms-swing-input').value = savedSwing;
   updateFavBar();
 });
-async function runScreener() {
-  const btn = document.getElementById('run-btn');
-  btn.disabled = true;
-  btn.innerHTML = `<svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Scanning...`;
+// ── Per-tab and Run All screener ──────────────────────────
+const TAB_ENDPOINTS = {
+  day:     '/api/run/day',
+  squeeze: '/api/run/squeeze',
+  swing:   '/api/run/swing',
+};
+
+const TAB_LABELS = {
+  day: 'Day Trades', squeeze: 'Squeezes', swing: 'Swings'
+};
+
+async function runTab(tab) {
+  const runBtn = document.getElementById('run-' + tab + '-btn');
+  const allBtn = document.getElementById('run-all-btn');
+  runBtn.disabled = true;
+  runBtn.textContent = '…';
+  allBtn.disabled = true;
+
+  // Show skeleton on that tab's pane
+  document.getElementById('pane-' + tab).innerHTML = skels(3);
+  showTab(tab);
+
+  try {
+    const res  = await fetch(TAB_ENDPOINTS[tab]);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+
+    if (data.cloud) {
+      document.getElementById('pane-' + tab).innerHTML = `
+        <div class="empty"><strong>Screener unavailable on mobile</strong>
+        Use the <strong>🔍 Manual Search</strong> tab to analyze specific tickers here.</div>`;
+      toast('Use Manual Search tab when on mobile');
+      return;
+    }
+
+    // Store tab data
+    if (!allData) allData = {day:[], squeeze:[], swing:[], sectors:[]};
+    allData[tab === 'squeeze' ? 'squeeze' : tab] = data.cards;
+
+    // Update sector dropdown with new sectors
+    const merged = [...new Set([
+      ...(allData.day || []).map(c => c.sector),
+      ...(allData.squeeze || []).map(c => c.sector),
+      ...(allData.swing || []).map(c => c.sector),
+    ].filter(Boolean))].sort();
+    populateSectors(merged);
+
+    // Render this tab
+    const countId = {day:'cnt-day', squeeze:'cnt-sq', swing:'cnt-sw'}[tab];
+    const filtered = filterCards(data.cards);
+    document.getElementById(countId).textContent = filtered.length;
+
+    const hdr = `<div class="section-hdr">${TAB_LABELS[tab]} — ${data.cards.length} candidates — ${data.time}</div>`;
+    if (!filtered.length) {
+      document.getElementById('pane-' + tab).innerHTML = hdr +
+        `<div class="empty"><strong>No candidates</strong>No results passed filters right now.</div>`;
+    } else {
+      const buildFn = tab === 'swing'
+        ? (d, i) => swingCardHTML(d, i)
+        : (d, i) => dayCardHTML(d, i, tab === 'squeeze' ? 'sq' : 'dt');
+      document.getElementById('pane-' + tab).innerHTML = hdr + filtered.map(buildFn).join('');
+    }
+
+    updateFavBar();
+    updateResultCount();
+
+    const et = new Date(new Date().toLocaleString('en-US', {timeZone:'America/New_York'}));
+    const h = et.getHours(), m = et.getMinutes(), s = et.getSeconds();
+    const hh = h%12||12, ampm = h>=12?'PM':'AM';
+    document.getElementById('last-run').textContent =
+      `${TAB_LABELS[tab]} updated ${String(hh).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')} ${ampm} ET`;
+
+    toast(`✓ ${TAB_LABELS[tab]}: ${data.cards.length} candidates`);
+
+  } catch(err) {
+    console.error(err);
+    document.getElementById('pane-' + tab).innerHTML =
+      `<div class="empty"><strong>Error</strong>Make sure app.py is running.</div>`;
+    toast(`Error running ${TAB_LABELS[tab]}`);
+  }
+
+  runBtn.disabled = false;
+  runBtn.textContent = '▶';
+  allBtn.disabled = false;
+}
+
+async function runAll() {
+  const allBtn = document.getElementById('run-all-btn');
+  allBtn.disabled = true;
+  allBtn.innerHTML = `<svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Running...`;
   ['day','squeeze','swing'].forEach(t => {
+    document.getElementById('run-' + t + '-btn').disabled = true;
     document.getElementById('pane-' + t).innerHTML = skels(3);
   });
+
   try {
     const res  = await fetch('/api/run');
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
 
-    // Cloud mode — Finviz not available, show friendly message
     if (data.cloud) {
       ['day','squeeze','swing'].forEach(t => {
         document.getElementById('pane-' + t).innerHTML = `
-          <div class="empty">
-            <strong>Screener unavailable on mobile</strong>
-            The Finviz screener only works when running locally on your PC.<br>
-            Use the <strong>🔍 Manual Search</strong> tab to analyze specific tickers here.
-          </div>`;
+          <div class="empty"><strong>Screener unavailable on mobile</strong>
+          Use the <strong>🔍 Manual Search</strong> tab.</div>`;
       });
       toast('Use Manual Search tab when on mobile');
-      btn.disabled = false;
-      btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="14" height="14"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Run Screener`;
       return;
     }
 
     allData = data;
     populateSectors(data.sectors || []);
     renderAll(data);
-    const et  = new Date(new Date().toLocaleString('en-US', {timeZone:'America/New_York'}));
+
+    const total = data.day.length + data.squeeze.length + data.swing.length;
+    toast(`✓ ${total} candidates across all screens`);
+
+    const et = new Date(new Date().toLocaleString('en-US', {timeZone:'America/New_York'}));
     const h = et.getHours(), m = et.getMinutes(), s = et.getSeconds();
     const hh = h%12||12, ampm = h>=12?'PM':'AM';
     document.getElementById('last-run').textContent =
       `Last run ${String(hh).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')} ${ampm} ET`;
-    const total = data.day.length + data.squeeze.length + data.swing.length;
-    toast(`✓ ${total} candidates found across all screens`);
+
   } catch(err) {
     console.error(err);
     ['day','squeeze','swing'].forEach(t => {
       document.getElementById('pane-' + t).innerHTML =
-        `<div class="empty"><strong>Connection error</strong>Make sure app.py is running in your terminal.</div>`;
+        `<div class="empty"><strong>Connection error</strong>Make sure app.py is running.</div>`;
     });
     toast('Error — is app.py running?');
   }
-  btn.disabled = false;
-  btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="14" height="14"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Run Screener`;
+
+  allBtn.disabled = false;
+  allBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" width="14" height="14"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg> Run All`;
+  ['day','squeeze','swing'].forEach(t => {
+    document.getElementById('run-' + t + '-btn').disabled = false;
+    document.getElementById('run-' + t + '-btn').textContent = '▶';
+  });
 }
 </script>
 </body>

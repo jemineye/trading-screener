@@ -113,29 +113,17 @@ def fetch_screener(filters, label):
     if not HAS_FINVIZ:
         return pd.DataFrame()
     try:
-        # Fetch Overview table (company info, sector, market cap)
+        print(f"  Fetching {label} from Finviz...")
         screen_ov = Screener(filters=filters, table="Overview", order="-volume")
         data_ov   = list(screen_ov)
         if not data_ov:
+            print(f"  → {label}: no results")
             return pd.DataFrame()
         df_ov = normalize_columns(pd.DataFrame(data_ov))
+        print(f"  → {label}: {len(df_ov)} tickers")
 
-        # Fetch Technical table (beta, SMAs, RSI, ATR, gap)
-        screen_tc = Screener(filters=filters, table="Technical", order="-volume")
-        data_tc   = list(screen_tc)
-        df_tc     = normalize_columns(pd.DataFrame(data_tc)) if data_tc else pd.DataFrame()
-
-        # Merge on Ticker
-        if not df_tc.empty and "Ticker" in df_tc.columns:
-            # Drop duplicate columns before merge
-            drop_cols = [c for c in df_tc.columns if c in df_ov.columns and c != "Ticker"]
-            df_tc = df_tc.drop(columns=drop_cols, errors="ignore")
-            df = df_ov.merge(df_tc, on="Ticker", how="left")
-        else:
-            df = df_ov
-
-        # Calculate Rel Volume via yfinance for each ticker
-        print(f"  Calculating rel volume for {len(df)} tickers...")
+        # Calculate Rel Volume via yfinance in parallel
+        print(f"  Calculating rel volume for {len(df_ov)} tickers...")
         def get_relvol(ticker):
             try:
                 hist = yf.Ticker(ticker).history(period="1mo", interval="1d")
@@ -148,16 +136,15 @@ def fetch_screener(filters, label):
                 return None
 
         import concurrent.futures
-        tickers = df["Ticker"].tolist()
+        tickers = df_ov["Ticker"].tolist()
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
             rvols = list(ex.map(get_relvol, tickers))
-        df["Rel Volume"] = rvols
-
-        print(f"  → {len(df)} results with {df['Rel Volume'].notna().sum()} rel vol values")
-        return df
+        df_ov["Rel Volume"] = rvols
+        print(f"  → {sum(1 for r in rvols if r)} rel vol values calculated")
+        return df_ov
 
     except Exception as e:
-        print(f"Error fetching {label}: {e}")
+        print(f"  Error fetching {label}: {e}")
         return pd.DataFrame()
 
 
@@ -291,10 +278,122 @@ def get_extended_hours_price(ticker, prev_close):
     return result
 
 
+
+
+def get_tv_technicals_batch(tickers, interval="1d"):
+    """
+    Fetch TradingView technical analysis for a batch of tickers at once.
+    Returns dict keyed by ticker with EMA5, EMA9, SMA20/50/200, VWAP, RSI, price, volume.
+    Falls back gracefully to yfinance if tradingview-ta not installed.
+    interval: "1m", "5m", "1d" etc.
+    """
+    results = {}
+    try:
+        from tradingview_ta import get_multiple_analysis, Interval
+        interval_map = {
+            "1m": Interval.INTERVAL_1_MINUTE,
+            "5m": Interval.INTERVAL_5_MINUTES,
+            "15m": Interval.INTERVAL_15_MINUTES,
+            "1h": Interval.INTERVAL_1_HOUR,
+            "1d": Interval.INTERVAL_1_DAY,
+            "1W": Interval.INTERVAL_1_WEEK,
+        }
+        tv_interval = interval_map.get(interval, Interval.INTERVAL_1_DAY)
+
+        # Build symbol list — TradingView needs exchange prefix
+        # We try NASDAQ first, fall back to NYSE for unknowns
+        symbols = [f"NASDAQ:{t}" for t in tickers]
+        analysis = get_multiple_analysis(
+            screener="america",
+            interval=tv_interval,
+            symbols=symbols
+        )
+
+        for ticker in tickers:
+            sym = f"NASDAQ:{ticker}"
+            a   = analysis.get(sym)
+            if not a:
+                # Try NYSE
+                try:
+                    from tradingview_ta import TA_Handler
+                    handler = TA_Handler(
+                        symbol=ticker, screener="america",
+                        exchange="NYSE", interval=tv_interval
+                    )
+                    a = handler.get_analysis()
+                except:
+                    results[ticker] = None
+                    continue
+
+            ind = a.indicators
+            results[ticker] = {
+                "price":    round(float(ind.get("close", 0)), 2),
+                "open":     round(float(ind.get("open", 0)), 2),
+                "high":     round(float(ind.get("high", 0)), 2),
+                "low":      round(float(ind.get("low", 0)), 2),
+                "volume":   int(ind.get("volume", 0)),
+                "ema5":     round(float(ind.get("EMA5",  ind.get("close", 0))), 2),
+                "ema9":     round(float(ind.get("EMA9",  ind.get("close", 0))), 2),
+                "sma20":    round(float(ind.get("SMA20", 0)), 2),
+                "sma50":    round(float(ind.get("SMA50", 0)), 2),
+                "sma200":   round(float(ind.get("SMA200", 0)), 2),
+                "vwap":     round(float(ind.get("VWAP", 0)), 2),
+                "rsi":      round(float(ind.get("RSI", 0)), 1),
+                "atr":      round(float(ind.get("ATR", 0)), 2),
+                "change":   round(float(ind.get("change", 0)), 2),
+                "ema_ok":   bool(ind.get("EMA5", 0) > ind.get("EMA9", 0)),
+                "source":   "tradingview",
+            }
+
+    except ImportError:
+        print("  tradingview-ta not installed — falling back to yfinance")
+        # Graceful fallback: use yfinance for each ticker
+        import concurrent.futures
+        def yf_snapshot(ticker):
+            try:
+                hist = yf.Ticker(ticker).history(period="6mo", interval="1d")
+                if hist.empty or len(hist) < 10:
+                    return ticker, None
+                closes = hist["Close"]
+                ema5 = closes.ewm(span=5, adjust=False).mean()
+                ema9 = closes.ewm(span=9, adjust=False).mean()
+                prev = hist.iloc[-2]
+                vwap = round(float((prev["High"] + prev["Low"] + prev["Close"]) / 3), 2)
+                return ticker, {
+                    "price":   round(float(closes.iloc[-1]), 2),
+                    "high":    round(float(hist["High"].iloc[-1]), 2),
+                    "low":     round(float(hist["Low"].iloc[-1]), 2),
+                    "volume":  int(hist["Volume"].iloc[-1]),
+                    "ema5":    round(float(ema5.iloc[-1]), 2),
+                    "ema9":    round(float(ema9.iloc[-1]), 2),
+                    "sma20":   round(float(closes.rolling(20).mean().iloc[-1]), 2),
+                    "sma50":   round(float(closes.rolling(50).mean().iloc[-1]), 2),
+                    "sma200":  round(float(closes.rolling(200).mean().iloc[-1]), 2),
+                    "vwap":    vwap,
+                    "rsi":     None,
+                    "atr":     None,
+                    "change":  round(float((closes.iloc[-1] - closes.iloc[-2]) / closes.iloc[-2] * 100), 2),
+                    "ema_ok":  bool(ema5.iloc[-1] > ema9.iloc[-1]),
+                    "source":  "yfinance",
+                }
+            except:
+                return ticker, None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+            for ticker, data in ex.map(lambda t: yf_snapshot(t), tickers):
+                results[ticker] = data
+
+    except Exception as e:
+        print(f"  TradingView batch error: {e}")
+
+    return results
+
+
+def get_premarket_levels(ticker):
+    """Fetch pre-market OHLC using yfinance 1-min bars."""
     result = {"pm_high": None, "pm_low": None, "pm_open": None, "pm_last": None}
     try:
-        t = yf.Ticker(ticker)
-        df = t.history(period="1d", interval="1m", prepost=True)
+        df = yf.Ticker(ticker).history(period="1d", interval="1m", prepost=True)
         if df.empty:
             return result
         df.index = df.index.tz_convert(ET)
@@ -310,7 +409,7 @@ def get_extended_hours_price(ticker, prev_close):
     return result
 
 
-def get_day_trade_technicals(ticker, session):
+
     result = {
         "ema5": None, "ema9": None, "ema_ok": False,
         "key_high": None, "key_low": None, "key_close": None,
@@ -335,6 +434,42 @@ def get_day_trade_technicals(ticker, session):
         result["key_close"]  = round(float(prev["Close"]), 2)
         result["vwap_proxy"] = round(float((prev["High"] + prev["Low"] + prev["Close"]) / 3), 2)
 
+        if session == "premarket":
+            result["key_high"] = round(float(prev["High"]), 2)
+            result["key_low"]  = round(float(prev["Low"]), 2)
+        else:
+            pm = get_premarket_levels(ticker)
+            result.update(pm)
+            result["key_high"] = pm["pm_high"] or round(float(prev["High"]), 2)
+            result["key_low"]  = pm["pm_low"]  or round(float(prev["Low"]),  2)
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+
+def get_day_trade_technicals(ticker, session):
+    """yfinance-based day trade technicals — used by manual search."""
+    result = {
+        "ema5": None, "ema9": None, "ema_ok": False,
+        "key_high": None, "key_low": None, "key_close": None,
+        "vwap_proxy": None,
+        "pm_high": None, "pm_low": None, "pm_open": None, "pm_last": None,
+        "level_mode": session, "error": None,
+    }
+    try:
+        hist = yf.Ticker(ticker).history(period="6mo", interval="1d")
+        if hist.empty or len(hist) < 10:
+            result["error"] = "insufficient history"
+            return result
+        closes = hist["Close"]
+        ema5 = closes.ewm(span=EMA_SHORT, adjust=False).mean()
+        ema9 = closes.ewm(span=EMA_LONG,  adjust=False).mean()
+        result["ema5"]   = round(float(ema5.iloc[-1]), 2)
+        result["ema9"]   = round(float(ema9.iloc[-1]), 2)
+        result["ema_ok"] = bool(ema5.iloc[-1] > ema9.iloc[-1])
+        prev = hist.iloc[-2] if len(hist) >= 2 else hist.iloc[-1]
+        result["key_close"]  = round(float(prev["Close"]), 2)
+        result["vwap_proxy"] = round(float((prev["High"] + prev["Low"] + prev["Close"]) / 3), 2)
         if session == "premarket":
             result["key_high"] = round(float(prev["High"]), 2)
             result["key_low"]  = round(float(prev["Low"]), 2)
@@ -413,6 +548,9 @@ def build_day_card(row, session):
     change  = str(row.get("Change", "—"))
     relvol  = str(row.get("Rel Volume") or row.get("Relative Volume") or row.get("RelVolume") or "—").replace("x", "").strip()
     volume  = str(row.get("Volume", "—"))
+    atr     = safe_float(row.get("ATR", 0)) or None
+    sma50   = safe_float(row.get("SMA50", 0)) or None
+    sma200  = safe_float(row.get("SMA200", 0)) or None
 
     tech = get_day_trade_technicals(ticker, session)
     news = get_news(ticker)
@@ -452,6 +590,7 @@ def build_day_card(row, session):
         "price": price, "change": change, "relvol": relvol,
         "volume": volume, "pos": pos, "squeeze": False,
         "ema_ok": tech["ema_ok"],
+        "atr": atr, "sma50": sma50, "sma200": sma200,
         "news": news,
         "levels": {
             "label": level_label,
@@ -518,6 +657,223 @@ def build_swing_card(row):
     }
 
 
+def build_day_card_tv(row, session, tv=None):
+    """
+    Build day trade card using TradingView data for live technicals.
+    Falls back to yfinance if tv is None.
+    """
+    ticker   = str(row.get("Ticker", ""))
+    company  = str(row.get("Company", ""))
+    sector   = str(row.get("Sector", ""))
+    industry = str(row.get("Industry", ""))
+    change   = str(row.get("Change", "—"))
+    relvol   = str(row.get("Rel Volume") or row.get("Relative Volume") or "—").replace("x","").strip()
+    atr      = safe_float(row.get("ATR", 0)) or None
+    sma50    = safe_float(row.get("SMA50", 0)) or None
+    sma200   = safe_float(row.get("SMA200", 0)) or None
+
+    # Use TradingView data if available, else fall back to yfinance
+    if tv:
+        price  = tv["price"]
+        volume = tv["volume"]
+        ema5   = tv["ema5"]
+        ema9   = tv["ema9"]
+        vwap   = tv.get("vwap") or 0
+        ema_ok = tv["ema_ok"]
+        atr    = atr or tv.get("atr")
+        sma50  = sma50 or tv.get("sma50")
+        sma200 = sma200 or tv.get("sma200")
+        data_source = "TradingView (live)"
+    else:
+        # yfinance fallback
+        tech   = get_day_trade_technicals(ticker, session)
+        price  = safe_float(row.get("Price", 0))
+        volume = safe_float(row.get("Volume", 0))
+        ema5   = tech["ema5"] or price
+        ema9   = tech["ema9"] or price * 0.98
+        vwap   = tech["vwap_proxy"] or 0
+        ema_ok = tech["ema_ok"]
+        data_source = "yfinance (delayed)"
+
+    pos = not change.startswith("-") if change not in ("—", "") else True
+
+    # Fetch pre-market levels (always via yfinance — TV doesn't do pre-market)
+    pm = {}
+    if session != "premarket":
+        pm = get_premarket_levels(ticker)
+
+    # Key levels — pull 6 months of history
+    hist_6m    = yf.Ticker(ticker).history(period="6mo", interval="1d")
+    prev_close = round(float(hist_6m["Close"].iloc[-2]), 2) if len(hist_6m) >= 2 else price
+    prev_high  = round(float(hist_6m["High"].iloc[-2]),  2) if len(hist_6m) >= 2 else price
+    prev_low   = round(float(hist_6m["Low"].iloc[-2]),   2) if len(hist_6m) >= 2 else price
+    vwap_proxy = round((prev_high + prev_low + prev_close) / 3, 2)
+
+    # 6-month range levels
+    high_6m      = round(float(hist_6m["High"].max()), 2)
+    low_6m       = round(float(hist_6m["Low"].min()),  2)
+
+    # 20-day consolidation range (the "box")
+    high_20d     = round(float(hist_6m["High"].iloc[-20:].max()), 2) if len(hist_6m) >= 20 else prev_high
+    low_20d      = round(float(hist_6m["Low"].iloc[-20:].min()),  2) if len(hist_6m) >= 20 else prev_low
+
+    # Key swing highs — last 3 local peaks above current price
+    highs = hist_6m["High"]
+    swing_highs = []
+    for i in range(2, len(highs) - 2):
+        if highs.iloc[i] > highs.iloc[i-1] and highs.iloc[i] > highs.iloc[i-2] and \
+           highs.iloc[i] > highs.iloc[i+1] and highs.iloc[i] > highs.iloc[i+2]:
+            h = round(float(highs.iloc[i]), 2)
+            if h > price:
+                swing_highs.append(h)
+    swing_highs = sorted(set(swing_highs))[:3]  # nearest 3 above price
+
+    if session == "premarket":
+        key_high    = prev_high
+        key_low     = prev_low
+        entry_low   = round(min(vwap_proxy, ema5), 2)
+        entry_high  = round(max(vwap_proxy, ema5), 2)
+        level_label = "Prior day"
+        entry_ref   = "EMA5 / VWAP"
+        stop        = round(min(ema9, vwap_proxy) * 0.998, 2)
+        stop_ref    = "below EMA9" if ema9 <= vwap_proxy else "below VWAP"
+    else:
+        key_high    = pm.get("pm_high") or prev_high
+        key_low     = pm.get("pm_low")  or prev_low
+        entry_low   = round(min(key_low, ema5), 2)
+        entry_high  = round(max(key_low, ema5), 2)
+        level_label = "Pre-market"
+        entry_ref   = "EMA5 / PM Low"
+        stop        = round(ema9 * 0.998, 2)
+        stop_ref    = "below EMA9"
+
+    risk = entry_low - stop
+
+    # T1 = nearest swing high above entry, fallback to 1:1R
+    t1_candidates = [h for h in swing_highs if h > entry_low]
+    t1 = round(min(t1_candidates), 2) if t1_candidates else round(entry_low + risk, 2) if risk > 0 else round(entry_low * 1.01, 2)
+
+    # T2 = prior day HOD breakout level
+    t2 = round(key_high * 1.002, 2)
+
+    # T3 = 6-month high ONLY if it's higher than T2
+    t3 = round(high_6m * 1.002, 2) if high_6m > t2 else None
+
+    rr1 = round((t1 - entry_low) / risk, 1) if risk > 0 else 0
+    rr2 = round((t2 - entry_low) / risk, 1) if risk > 0 else 0
+    rr3 = round((t3 - entry_low) / risk, 1) if t3 and risk > 0 else None
+
+    news = get_news(ticker)
+    ext  = get_extended_hours_price(ticker, prev_close)
+
+    return {
+        "ticker": ticker, "company": company,
+        "sector": sector, "industry": industry,
+        "price": price, "change": change, "relvol": relvol,
+        "volume": volume, "pos": pos, "squeeze": False,
+        "ema_ok": bool(ema_ok),
+        "atr": atr, "sma50": sma50, "sma200": sma200,
+        "data_source": data_source,
+        "news": news, "ext": ext,
+        "levels": {
+            "label": level_label,
+            "key_high": key_high, "key_low": key_low,
+            "prev_close": prev_close, "vwap": vwap_proxy,
+            "pm_high": pm.get("pm_high"), "pm_low": pm.get("pm_low"),
+            "pm_open": pm.get("pm_open"), "pm_last": pm.get("pm_last"),
+            "high_6m": high_6m, "low_6m": low_6m,
+            "high_20d": high_20d, "low_20d": low_20d,
+            "swing_highs": swing_highs,
+        },
+        "plan": {
+            "entry_low": entry_low, "entry_high": entry_high,
+            "entry_ref": entry_ref,
+            "stop": stop, "stop_ref": stop_ref,
+            "t1": t1, "t2": t2, "t3": t3,
+            "rr1": rr1, "rr2": rr2, "rr3": rr3,
+        },
+        "emas": {"ema5": ema5, "ema9": ema9},
+    }
+
+
+def build_swing_card_tv(row, tv=None, tv_daily=None):
+    """
+    Build swing card using TradingView data for live technicals.
+    tv = intraday TV data, tv_daily = daily TV data for SMA200 slope.
+    """
+    ticker   = str(row.get("Ticker", ""))
+    company  = str(row.get("Company", ""))
+    sector   = str(row.get("Sector", ""))
+    industry = str(row.get("Industry", ""))
+    change   = str(row.get("Change", "—"))
+    relvol   = str(row.get("Rel Volume") or "—").replace("x","").strip()
+    pos      = not change.startswith("-") if change not in ("—","") else True
+
+    # Get full swing technicals from yfinance (52wk, swing highs/lows need history)
+    tech = get_swing_technicals(ticker)
+    if tech.get("error"):
+        return None
+
+    # Override EMAs and SMAs with TradingView if available
+    if tv_daily:
+        ema5   = tv_daily.get("ema5")   or tech["ema5"]
+        ema9   = tv_daily.get("ema9")   or tech["ema9"]
+        sma20  = tv_daily.get("sma20")  or tech["sma20"]
+        sma50  = tv_daily.get("sma50")  or tech["sma50"]
+        sma200 = tv_daily.get("sma200") or tech["sma200"]
+        price  = tv_daily.get("price")  or tech["current_price"]
+        ema_ok = bool(tv_daily.get("ema_ok", tech["ema_ok"]))
+        data_source = "TradingView (live)"
+    else:
+        ema5   = tech["ema5"]
+        ema9   = tech["ema9"]
+        sma20  = tech["sma20"]
+        sma50  = tech["sma50"]
+        sma200 = tech["sma200"]
+        price  = tech["current_price"]
+        ema_ok = tech["ema_ok"]
+        data_source = "yfinance (delayed)"
+
+    # SMA200 rising check
+    sma200_rising = tech["sma200_rising"]
+    if not sma200_rising:
+        return None  # skip non-rising 200MA
+
+    volume = safe_float(row.get("Volume", 0))
+    support_val   = tech["support_val"] or price * 0.95
+    support_label = tech["support_label"] or "SMA50"
+    entry = round(support_val * 1.005, 2)
+    stop  = round(support_val * 0.97,  2)
+    risk  = entry - stop
+    t1    = tech["swing_high_20d"] or round(entry + risk * 2, 2)
+    t2    = tech["week52_high"]    or round(entry + risk * 3, 2)
+    rr1   = round((t1 - entry) / risk, 1) if risk > 0 else 0
+    rr2   = round((t2 - entry) / risk, 1) if risk > 0 else 0
+
+    news = get_news(ticker)
+
+    return {
+        "ticker": ticker, "company": company,
+        "sector": sector, "industry": industry,
+        "price": price, "change": change, "relvol": relvol,
+        "volume": volume, "pos": pos,
+        "ema_ok": bool(ema_ok),
+        "sma200_rising": bool(sma200_rising),
+        "data_source": data_source,
+        "news": news,
+        "levels": {
+            "week52_high": tech["week52_high"], "week52_low": tech["week52_low"],
+            "swing_high_20d": tech["swing_high_20d"], "swing_low_20d": tech["swing_low_20d"],
+            "sma20": sma20, "sma50": sma50, "sma200": sma200,
+        },
+        "plan": {
+            "support_label": support_label, "entry": entry,
+            "stop": stop, "t1": t1, "t2": t2, "rr1": rr1, "rr2": rr2,
+        },
+        "emas": {"ema5": ema5, "ema9": ema9},
+    }
+
+
 # ══════════════════════════════════════════════════════════════
 #  ROUTES
 # ══════════════════════════════════════════════════════════════
@@ -525,6 +881,23 @@ def build_swing_card(row):
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+
+# Caches Finviz results for 10 minutes to avoid redundant fetches
+import time as _time
+_cache = {}
+_CACHE_TTL = 600  # 10 minutes
+
+def cached_fetch(filters, label):
+    key = label
+    now = _time.time()
+    if key in _cache and (now - _cache[key]["ts"]) < _CACHE_TTL:
+        print(f"  → {label}: using cached results ({len(_cache[key]['df'])} tickers)")
+        return _cache[key]["df"]
+    df = fetch_screener(filters, label)
+    _cache[key] = {"df": df, "ts": now}
+    return df
 
 
 
@@ -650,73 +1023,145 @@ def build_manual_card(ticker, mode, session):
         return {"ticker": ticker, "error": str(e)}
 
 
+def cloud_blocked():
+    return jsonify({
+        "cloud":   True,
+        "message": "The main screener uses Finviz and only works when running locally on your PC. Use the 🔍 Manual Search tab to analyze specific tickers here.",
+        "session": get_session(),
+        "time":    datetime.now(ET).strftime("%I:%M:%S %p ET"),
+        "cards": [], "sectors": [],
+    })
+
+
+def build_day_sq_response(filters, label, session, is_squeeze=False, exclude_tickers=None, raw_df=None):
+    """Shared logic for day trades and squeezes."""
+    raw  = apply_volume_gate(raw_df if raw_df is not None else fetch_screener(filters, label))
+    if raw.empty:
+        return [], []
+
+    exclude = set(exclude_tickers or [])
+    tickers = [t for t in raw["Ticker"].tolist() if t not in exclude]
+
+    tv_interval = "1d" if session == "premarket" else "1m"
+    print(f"  Fetching TradingView data for {len(tickers)} {label} tickers ({tv_interval})...")
+    tv_data = get_tv_technicals_batch(tickers, interval=tv_interval)
+
+    cards = []
+    for _, row in raw.iterrows():
+        try:
+            ticker = str(row.get("Ticker", ""))
+            if ticker in exclude:
+                continue
+            tv   = tv_data.get(ticker)
+            card = build_day_card_tv(row, session, tv)
+            if card:
+                if is_squeeze:
+                    card["squeeze"]     = True
+                    card["short_float"] = str(row.get("Short Float", "—"))
+                    card["float_size"]  = str(row.get("Float", "—"))
+                cards.append(card)
+        except Exception as e:
+            print(f"{label} card error {row.get('Ticker')}: {e}")
+
+    sectors = sorted(set(c["sector"] for c in cards if c.get("sector")))
+    return cards, sectors
+
+
+@app.route("/api/run/day")
+def run_day_trades():
+    if IS_CLOUD: return cloud_blocked()
+    session = get_session()
+    now_et  = datetime.now(ET).strftime("%I:%M:%S %p ET")
+    cards, sectors = build_day_sq_response(
+        DAY_TRADE_FILTERS, "Day Trades", session,
+        raw_df=cached_fetch(DAY_TRADE_FILTERS, "Day Trades")
+    )
+    return jsonify({"cloud": False, "session": session, "time": now_et,
+                    "cards": cards, "sectors": sectors})
+
+
+@app.route("/api/run/squeeze")
+def run_squeezes():
+    if IS_CLOUD: return cloud_blocked()
+    session = get_session()
+    now_et  = datetime.now(ET).strftime("%I:%M:%S %p ET")
+    # Reuse cached day trades for exclusion — no extra Finviz call
+    day_raw     = cached_fetch(DAY_TRADE_FILTERS, "Day Trades")
+    day_tickers = day_raw["Ticker"].tolist() if not day_raw.empty else []
+    cards, sectors = build_day_sq_response(
+        SQUEEZE_FILTERS, "Squeezes", session,
+        is_squeeze=True, exclude_tickers=day_tickers,
+        raw_df=cached_fetch(SQUEEZE_FILTERS, "Squeezes")
+    )
+    return jsonify({"cloud": False, "session": session, "time": now_et,
+                    "cards": cards, "sectors": sectors})
+
+
+@app.route("/api/run/swing")
+def run_swings():
+    if IS_CLOUD: return cloud_blocked()
+    session = get_session()
+    now_et  = datetime.now(ET).strftime("%I:%M:%S %p ET")
+    raw = apply_volume_gate(cached_fetch(SWING_FILTERS, "Swings"))
+    if raw.empty:
+        return jsonify({"cloud": False, "session": session, "time": now_et,
+                        "cards": [], "sectors": []})
+    tickers = raw["Ticker"].tolist()
+    print(f"  Fetching TradingView daily data for {len(tickers)} swing tickers...")
+    tv_daily = get_tv_technicals_batch(tickers, interval="1d")
+    cards = []
+    for _, row in raw.iterrows():
+        try:
+            ticker = str(row.get("Ticker", ""))
+            tv_day = tv_daily.get(ticker)
+            card   = build_swing_card_tv(row, None, tv_day)
+            if card:
+                cards.append(card)
+        except Exception as e:
+            print(f"Swing card error {row.get('Ticker')}: {e}")
+    sectors = sorted(set(c["sector"] for c in cards if c.get("sector")))
+    return jsonify({"cloud": False, "session": session, "time": now_et,
+                    "cards": cards, "sectors": sectors})
+
+
 @app.route("/api/run")
 def run_screener():
-    # On Railway, Finviz is blocked by IP. Return friendly message.
-    if IS_CLOUD:
-        return jsonify({
-            "cloud":   True,
-            "message": "The main screener uses Finviz and only works when running locally on your PC. Use the 🔍 Manual Search tab to analyze specific tickers here.",
-            "session": get_session(),
-            "time":    datetime.now(ET).strftime("%I:%M:%S %p ET"),
-            "day": [], "squeeze": [], "swing": [], "sectors": [],
-        })
-
+    """Legacy endpoint — runs all three in parallel for 'Run All'."""
+    if IS_CLOUD: return cloud_blocked()
     session = get_session()
     now_et  = datetime.now(ET).strftime("%I:%M:%S %p ET")
 
-    day_raw   = apply_volume_gate(fetch_screener(DAY_TRADE_FILTERS, "Day Trades"))
-    sq_raw    = apply_volume_gate(fetch_screener(SQUEEZE_FILTERS,   "Squeezes"))
-    swing_raw = apply_volume_gate(fetch_screener(SWING_FILTERS,     "Swings"))
-
-    day_tickers = set(day_raw["Ticker"].tolist()) if not day_raw.empty else set()
-
-    day_cards = []
-    for _, row in day_raw.iterrows():
-        try:
-            day_cards.append(build_day_card(row, session))
-        except Exception as e:
-            print(f"Day card error {row.get('Ticker')}: {e}")
-
-    sq_cards = []
-    if not sq_raw.empty:
-        for _, row in sq_raw.iterrows():
-            ticker = str(row.get("Ticker", ""))
-            if ticker in day_tickers:
-                continue
-            try:
-                card = build_day_card(row, session)
-                card["squeeze"]     = True
-                card["short_float"] = str(row.get("Short Float", "—"))
-                card["float_size"]  = str(row.get("Float", "—"))
-                sq_cards.append(card)
-            except Exception as e:
-                print(f"Squeeze card error {ticker}: {e}")
-
-    swing_cards = []
-    if not swing_raw.empty:
-        for _, row in swing_raw.iterrows():
-            try:
-                card = build_swing_card(row)
-                if card:
-                    swing_cards.append(card)
-            except Exception as e:
-                print(f"Swing card error {row.get('Ticker')}: {e}")
+    import concurrent.futures as cf
+    print("  Running all screeners in parallel...")
+    with cf.ThreadPoolExecutor(max_workers=3) as ex:
+        f_day   = ex.submit(run_day_trades)
+        f_sq    = ex.submit(run_squeezes)
+        f_swing = ex.submit(run_swings)
+        day_resp   = f_day.result().get_json()
+        sq_resp    = f_sq.result().get_json()
+        swing_resp = f_swing.result().get_json()
 
     all_sectors = sorted(set(
-        c["sector"] for cards in [day_cards, sq_cards, swing_cards]
-        for c in cards if c.get("sector")
+        day_resp.get("sectors", []) +
+        sq_resp.get("sectors", []) +
+        swing_resp.get("sectors", [])
     ))
 
     return jsonify({
-        "cloud":    False,
-        "session":  session,
-        "time":     now_et,
-        "day":      day_cards,
-        "squeeze":  sq_cards,
-        "swing":    swing_cards,
-        "sectors":  all_sectors,
+        "cloud":   False,
+        "session": session,
+        "time":    now_et,
+        "day":     day_resp.get("cards", []),
+        "squeeze": sq_resp.get("cards", []),
+        "swing":   swing_resp.get("cards", []),
+        "sectors": all_sectors,
     })
+
+
+@app.route("/api/cache/clear")
+def clear_cache():
+    _cache.clear()
+    return jsonify({"cleared": True, "message": "Cache cleared — next run will fetch fresh data"})
 
 
 @app.route("/api/environment")
