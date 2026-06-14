@@ -1126,34 +1126,67 @@ def run_swings():
 
 @app.route("/api/run")
 def run_screener():
-    """Legacy endpoint — runs all three in parallel for 'Run All'."""
+    """Run All — fetches all three screeners in parallel."""
     if IS_CLOUD: return cloud_blocked()
     session = get_session()
     now_et  = datetime.now(ET).strftime("%I:%M:%S %p ET")
 
     import concurrent.futures as cf
+
+    def fetch_day():
+        raw = cached_fetch(DAY_TRADE_FILTERS, "Day Trades")
+        cards, sectors = build_day_sq_response(
+            DAY_TRADE_FILTERS, "Day Trades", session,
+            raw_df=apply_volume_gate(raw)
+        )
+        return cards, sectors
+
+    def fetch_squeeze():
+        day_raw     = cached_fetch(DAY_TRADE_FILTERS, "Day Trades")
+        day_tickers = day_raw["Ticker"].tolist() if not day_raw.empty else []
+        cards, sectors = build_day_sq_response(
+            SQUEEZE_FILTERS, "Squeezes", session,
+            is_squeeze=True, exclude_tickers=day_tickers,
+            raw_df=apply_volume_gate(cached_fetch(SQUEEZE_FILTERS, "Squeezes"))
+        )
+        return cards, sectors
+
+    def fetch_swing():
+        raw = apply_volume_gate(cached_fetch(SWING_FILTERS, "Swings"))
+        if raw.empty:
+            return [], []
+        tickers = raw["Ticker"].tolist()
+        print(f"  Fetching TradingView daily data for {len(tickers)} swing tickers...")
+        tv_daily = get_tv_technicals_batch(tickers, interval="1d")
+        cards = []
+        for _, row in raw.iterrows():
+            try:
+                card = build_swing_card_tv(row, None, tv_daily.get(str(row.get("Ticker", ""))))
+                if card:
+                    cards.append(card)
+            except Exception as e:
+                print(f"Swing card error {row.get('Ticker')}: {e}")
+        sectors = sorted(set(c["sector"] for c in cards if c.get("sector")))
+        return cards, sectors
+
     print("  Running all screeners in parallel...")
     with cf.ThreadPoolExecutor(max_workers=3) as ex:
-        f_day   = ex.submit(run_day_trades)
-        f_sq    = ex.submit(run_squeezes)
-        f_swing = ex.submit(run_swings)
-        day_resp   = f_day.result().get_json()
-        sq_resp    = f_sq.result().get_json()
-        swing_resp = f_swing.result().get_json()
+        f_day   = ex.submit(fetch_day)
+        f_sq    = ex.submit(fetch_squeeze)
+        f_swing = ex.submit(fetch_swing)
+        day_cards,   day_sectors   = f_day.result()
+        sq_cards,    sq_sectors    = f_sq.result()
+        swing_cards, swing_sectors = f_swing.result()
 
-    all_sectors = sorted(set(
-        day_resp.get("sectors", []) +
-        sq_resp.get("sectors", []) +
-        swing_resp.get("sectors", [])
-    ))
+    all_sectors = sorted(set(day_sectors + sq_sectors + swing_sectors))
 
     return jsonify({
         "cloud":   False,
         "session": session,
         "time":    now_et,
-        "day":     day_resp.get("cards", []),
-        "squeeze": sq_resp.get("cards", []),
-        "swing":   swing_resp.get("cards", []),
+        "day":     day_cards,
+        "squeeze": sq_cards,
+        "swing":   swing_cards,
         "sectors": all_sectors,
     })
 
