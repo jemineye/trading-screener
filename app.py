@@ -43,13 +43,12 @@ ET          = pytz.timezone("America/New_York")
 MARKET_OPEN = dtime(9, 30)
 
 # Detect if running on Railway (cloud) or locally
-# Railway sets several env vars — check multiple for reliability
-IS_CLOUD = any([
-    os.environ.get("RAILWAY_ENVIRONMENT"),
-    os.environ.get("RAILWAY_PROJECT_ID"),
-    os.environ.get("RAILWAY_SERVICE_ID"),
-    os.environ.get("PORT"),  # Railway always sets PORT; local runs don't
-])
+# Railway sets RAILWAY_PROJECT_ID; local machines don't
+IS_CLOUD = bool(
+    os.environ.get("RAILWAY_PROJECT_ID") or
+    os.environ.get("RAILWAY_ENVIRONMENT") or
+    os.environ.get("RAILWAY_SERVICE_ID")
+)
 
 DAY_TRADE_FILTERS = [
     "cap_smallunder",
@@ -119,45 +118,92 @@ def fetch_screener(filters, label):
         if not data_ov:
             print(f"  → {label}: no results")
             return pd.DataFrame()
-        df_ov = normalize_columns(pd.DataFrame(data_ov))
+
+        raw_df = pd.DataFrame(data_ov)
+
+        # Finviz 2.0.0 bug: values are shifted right by 1 position regardless
+        # of whether Price appears numeric. Always remap columns.
+        if "No." in raw_df.columns and not raw_df.empty:
+            # Check if Ticker column has suspiciously short values (1-2 chars)
+            # while Company column has longer values that look like tickers
+            avg_ticker_len = raw_df["Ticker"].astype(str).str.len().mean()
+            avg_company_len = raw_df["Company"].astype(str).str.len().mean()
+            if avg_ticker_len < 2.5 and avg_company_len <= 5:
+                # Values are shifted — Company col has the real tickers
+                raw_df = raw_df.rename(columns={
+                    "Ticker":     "_drop",
+                    "Company":    "Ticker",
+                    "Sector":     "Company",
+                    "Industry":   "Sector",
+                    "Country":    "Industry",
+                    "Market Cap": "Country",
+                    "P/E":        "Market Cap",
+                    "Price":      "P/E",
+                    "Change":     "Price",
+                    "Volume":     "Change",
+                })
+                raw_df["Volume"] = None
+
+        df_ov = normalize_columns(raw_df.drop(columns=["No.", "_drop"], errors="ignore"))
+        df_ov = df_ov[df_ov["Ticker"].astype(str).str.match(r'^[A-Z]{1,5}(\.[A-Z])?$')].copy()
         print(f"  → {label}: {len(df_ov)} tickers")
 
-        # Calculate Rel Volume via yfinance in parallel
+        # Calculate Rel Volume and actual Volume via yfinance in parallel
         print(f"  Calculating rel volume for {len(df_ov)} tickers...")
-        def get_relvol(ticker):
+
+        def get_vol_data(ticker):
             try:
                 hist = yf.Ticker(ticker).history(period="1mo", interval="1d")
                 if hist.empty or len(hist) < 5:
-                    return None
+                    return None, None
                 avg_vol = float(hist["Volume"].iloc[:-1].mean())
                 cur_vol = float(hist["Volume"].iloc[-1])
-                return round(cur_vol / avg_vol, 1) if avg_vol > 0 else None
+                relvol  = round(cur_vol / avg_vol, 1) if avg_vol > 0 else None
+                return relvol, int(cur_vol)
             except:
-                return None
+                return None, None
 
         import concurrent.futures
         tickers = df_ov["Ticker"].tolist()
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
-            rvols = list(ex.map(get_relvol, tickers))
+            vol_results = list(ex.map(get_vol_data, tickers))
+
+        rvols   = [r[0] for r in vol_results]
+        volumes = [r[1] for r in vol_results]
         df_ov["Rel Volume"] = rvols
+        df_ov["yf_volume"]  = volumes
+
+        # Apply 1M volume gate using yfinance volume
+        before = len(df_ov)
+        df_ov = df_ov[df_ov["yf_volume"].apply(lambda v: v is not None and v >= MIN_VOLUME)].copy()
+        print(f"  → {before} → {len(df_ov)} after {MIN_VOLUME:,} volume gate")
         print(f"  → {sum(1 for r in rvols if r)} rel vol values calculated")
+
+        # Use yfinance volume as display volume
+        df_ov["Volume"] = df_ov["yf_volume"]
+        return df_ov
+
+        # Apply 1M volume gate using yfinance volume
+        before = len(df_ov)
+        df_ov = df_ov[df_ov["yf_volume"].apply(lambda v: v is not None and v >= MIN_VOLUME)].copy()
+        print(f"  → {before} tickers → {len(df_ov)} after {MIN_VOLUME:,} volume gate")
+        print(f"  → {sum(1 for r in rvols if r)} rel vol values calculated")
+
+        # Use yfinance volume as the display volume
+        df_ov["Volume"] = df_ov["yf_volume"]
         return df_ov
 
     except Exception as e:
         print(f"  Error fetching {label}: {e}")
+        import traceback; traceback.print_exc()
         return pd.DataFrame()
 
 
 def apply_volume_gate(df):
     if df.empty:
         return df
-    if "Volume" in df.columns:
-        df = df.copy()
-        df["Volume"] = pd.to_numeric(
-            df["Volume"].astype(str).str.replace(",", ""), errors="coerce"
-        )
-        df = df[df["Volume"] >= MIN_VOLUME]
-    # Sort by rel volume descending
+    if "Ticker" in df.columns:
+        df = df[df["Ticker"].astype(str).str.match(r'^[A-Z]{1,5}(\.[A-Z])?$')].copy()
     if "Rel Volume" in df.columns:
         df = df.copy()
         df["Rel Volume"] = pd.to_numeric(df["Rel Volume"], errors="coerce")
@@ -806,7 +852,9 @@ def build_swing_card_tv(row, tv=None, tv_daily=None):
     sector   = str(row.get("Sector", ""))
     industry = str(row.get("Industry", ""))
     change   = str(row.get("Change", "—"))
+    # Use yfinance-calculated rel volume, not Finviz's broken column
     relvol   = str(row.get("Rel Volume") or "—").replace("x","").strip()
+    volume   = row.get("yf_volume") or row.get("Volume") or 0
     pos      = not change.startswith("-") if change not in ("—","") else True
 
     # Get full swing technicals from yfinance (52wk, swing highs/lows need history)
@@ -839,7 +887,6 @@ def build_swing_card_tv(row, tv=None, tv_daily=None):
     if not sma200_rising:
         return None  # skip non-rising 200MA
 
-    volume = safe_float(row.get("Volume", 0))
     support_val   = tech["support_val"] or price * 0.95
     support_label = tech["support_label"] or "SMA50"
     entry = round(support_val * 1.005, 2)
@@ -1035,7 +1082,7 @@ def cloud_blocked():
 
 def build_day_sq_response(filters, label, session, is_squeeze=False, exclude_tickers=None, raw_df=None):
     """Shared logic for day trades and squeezes."""
-    raw  = apply_volume_gate(raw_df if raw_df is not None else fetch_screener(filters, label))
+    raw = apply_volume_gate(raw_df if raw_df is not None else fetch_screener(filters, label))
     if raw.empty:
         return [], []
 
@@ -1061,7 +1108,7 @@ def build_day_sq_response(filters, label, session, is_squeeze=False, exclude_tic
                     card["float_size"]  = str(row.get("Float", "—"))
                 cards.append(card)
         except Exception as e:
-            print(f"{label} card error {row.get('Ticker')}: {e}")
+            print(f"  !! {label} card error {row.get('Ticker')}: {e}")
 
     sectors = sorted(set(c["sector"] for c in cards if c.get("sector")))
     return cards, sectors
@@ -1165,7 +1212,7 @@ def run_screener():
                 if card:
                     cards.append(card)
             except Exception as e:
-                print(f"Swing card error {row.get('Ticker')}: {e}")
+                print(f"  Swing card error {row.get('Ticker')}: {e}")
         sectors = sorted(set(c["sector"] for c in cards if c.get("sector")))
         return cards, sectors
 
