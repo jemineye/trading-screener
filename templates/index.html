@@ -1048,9 +1048,13 @@ function dayCardHTML(d, idx, prefix) {
         </div>` : ''}
         <div class="plan-block">
           <div class="plan-title">Trade plan</div>
+          ${plan.resistance ? `
+          <div class="plan-row"><span class="plan-key">⏳ Wait for breakout</span><span class="plan-val v-amber">${fmt(plan.resistance)} ← must clear &amp; hold before entry</span></div>
+          <div class="plan-row"><span class="plan-key">Entry after breakout</span><span class="plan-val v-blue">Pullback to EMA5 / ${plan.entry_ref.includes('VWAP') ? 'VWAP' : 'PM Low'} once above ${fmt(plan.resistance)}</span></div>
+          ` : `
           <div class="plan-row"><span class="plan-key">Entry zone</span><span class="plan-val v-blue">${fmt(plan.entry_low)} – ${fmt(plan.entry_high)} ← ${plan.entry_ref}</span></div>
           <div class="plan-row"><span class="plan-key">Stop</span><span class="plan-val v-red">${fmt(plan.stop)} ← ${plan.stop_ref || 'below EMA9'}</span></div>
-          ${plan.resistance ? `<div class="plan-row"><span class="plan-key">⚠️ Resistance</span><span class="plan-val v-amber">${fmt(plan.resistance)} ← must clear before entry</span></div>` : ''}
+          `}
           <div class="plan-row"><span class="plan-key">Target 1</span><span class="plan-val v-green">${fmt(plan.t1)} &nbsp;(${rr(plan.rr1)}) ← nearest swing high</span></div>
           <div class="plan-row"><span class="plan-key">Target 2</span><span class="plan-val v-green">${fmt(plan.t2)} &nbsp;(${rr(plan.rr2)}) ← ${lvl.label} high</span></div>
           ${plan.t3 ? `<div class="plan-row"><span class="plan-key">Target 3</span><span class="plan-val v-green">${fmt(plan.t3)} &nbsp;(${rr(plan.rr3)}) ← 6-month high</span></div>` : ''}
