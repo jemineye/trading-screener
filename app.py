@@ -764,16 +764,23 @@ def build_day_card_tv(row, session, tv=None):
     high_20d     = round(float(hist_6m["High"].iloc[-20:].max()), 2) if len(hist_6m) >= 20 else prev_high
     low_20d      = round(float(hist_6m["Low"].iloc[-20:].min()),  2) if len(hist_6m) >= 20 else prev_low
 
-    # Key swing highs — last 3 local peaks above current price
+    # Key swing highs — cluster levels within 3% of each other, keep only distinct ones
     highs = hist_6m["High"]
-    swing_highs = []
+    raw_swing_highs = []
     for i in range(2, len(highs) - 2):
         if highs.iloc[i] > highs.iloc[i-1] and highs.iloc[i] > highs.iloc[i-2] and \
            highs.iloc[i] > highs.iloc[i+1] and highs.iloc[i] > highs.iloc[i+2]:
             h = round(float(highs.iloc[i]), 2)
             if h > price:
-                swing_highs.append(h)
-    swing_highs = sorted(set(swing_highs))[:3]  # nearest 3 above price
+                raw_swing_highs.append(h)
+
+    # Cluster swing highs within 3% of each other — keep the highest of each cluster
+    raw_swing_highs = sorted(set(raw_swing_highs))
+    swing_highs = []
+    for h in raw_swing_highs:
+        if not swing_highs or (h - swing_highs[-1]) / swing_highs[-1] > 0.03:
+            swing_highs.append(h)
+    swing_highs = swing_highs[:3]  # keep nearest 3 distinct levels
 
     if session == "premarket":
         key_high    = prev_high
@@ -809,13 +816,18 @@ def build_day_card_tv(row, session, tv=None):
         # Price hasn't cleared this level yet — it's resistance
         resistance     = nearest_swing
         resistance_ref = "overhead resistance — needs to clear before entry"
-        # T1 = next swing high above resistance (real target once cleared)
-        t1_candidates  = [h for h in remaining_highs if h > nearest_swing]
-        t1 = round(min(t1_candidates), 2) if t1_candidates else round(entry_low + risk * 2, 2) if risk > 0 else round(entry_low * 1.02, 2)
+        # T1 = next distinct swing high at least 5% above resistance
+        t1_candidates  = [h for h in remaining_highs if h > nearest_swing * 1.05]
+        if not t1_candidates:
+            # Fall back to 2:1R projected from breakout point
+            breakout_entry = nearest_swing * 1.01
+            t1 = round(breakout_entry + risk * 2, 2) if risk > 0 else round(nearest_swing * 1.15, 2)
+        else:
+            t1 = round(min(t1_candidates), 2)
     else:
-        # Price has cleared nearest swing high — use it or next one as T1
-        t1_candidates  = [h for h in swing_highs if h > entry_low]
-        t1 = round(min(t1_candidates), 2) if t1_candidates else round(entry_low + risk, 2) if risk > 0 else round(entry_low * 1.01, 2)
+        # Price has cleared nearest swing high — use next distinct level as T1
+        t1_candidates  = [h for h in swing_highs if h > entry_low * 1.03]
+        t1 = round(min(t1_candidates), 2) if t1_candidates else round(entry_low + risk * 2, 2) if risk > 0 else round(entry_low * 1.10, 2)
 
     # T2 = prior day / PM HOD breakout level
     t2 = round(key_high * 1.002, 2)
