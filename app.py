@@ -796,14 +796,31 @@ def build_day_card_tv(row, session, tv=None):
 
     risk = entry_low - stop
 
-    # T1 = nearest swing high above entry, fallback to 1:1R
-    t1_candidates = [h for h in swing_highs if h > entry_low]
-    t1 = round(min(t1_candidates), 2) if t1_candidates else round(entry_low + risk, 2) if risk > 0 else round(entry_low * 1.01, 2)
+    # Determine nearest swing high relative to current price
+    # If price is BELOW nearest swing high → it's overhead resistance, not a target
+    # If price is ABOVE nearest swing high → already broken out, use next one as T1
+    nearest_swing   = swing_highs[0] if swing_highs else None
+    remaining_highs = swing_highs[1:] if swing_highs else []
 
-    # T2 = prior day HOD breakout level
+    resistance      = None  # overhead resistance warning
+    resistance_ref  = None
+
+    if nearest_swing and price < nearest_swing:
+        # Price hasn't cleared this level yet — it's resistance
+        resistance     = nearest_swing
+        resistance_ref = "overhead resistance — needs to clear before entry"
+        # T1 = next swing high above resistance (real target once cleared)
+        t1_candidates  = [h for h in remaining_highs if h > nearest_swing]
+        t1 = round(min(t1_candidates), 2) if t1_candidates else round(entry_low + risk * 2, 2) if risk > 0 else round(entry_low * 1.02, 2)
+    else:
+        # Price has cleared nearest swing high — use it or next one as T1
+        t1_candidates  = [h for h in swing_highs if h > entry_low]
+        t1 = round(min(t1_candidates), 2) if t1_candidates else round(entry_low + risk, 2) if risk > 0 else round(entry_low * 1.01, 2)
+
+    # T2 = prior day / PM HOD breakout level
     t2 = round(key_high * 1.002, 2)
 
-    # T3 = 6-month high ONLY if it's higher than T2
+    # T3 = 6-month high ONLY if higher than T2
     t3 = round(high_6m * 1.002, 2) if high_6m > t2 else None
 
     rr1 = round((t1 - entry_low) / risk, 1) if risk > 0 else 0
@@ -836,6 +853,7 @@ def build_day_card_tv(row, session, tv=None):
             "entry_low": entry_low, "entry_high": entry_high,
             "entry_ref": entry_ref,
             "stop": stop, "stop_ref": stop_ref,
+            "resistance": resistance, "resistance_ref": resistance_ref,
             "t1": t1, "t2": t2, "t3": t3,
             "rr1": rr1, "rr2": rr2, "rr3": rr3,
         },
