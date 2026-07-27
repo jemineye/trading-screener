@@ -64,7 +64,8 @@ SWING_FILTERS = [
     "sh_avgvol_o2000",
     "sh_curvol_o5000",
     "ta_beta_o1",
-    "ta_sma200_pa",
+    "ta_sma200_pa",     # Price above 200 SMA
+    "ta_sma50_pa",      # Price above 50 SMA
 ]
 
 SQUEEZE_FILTERS = [
@@ -887,6 +888,13 @@ def build_swing_card_tv(row, tv=None, tv_daily=None):
     if not sma200_rising:
         return None  # skip non-rising 200MA
 
+    # Additional quality filters
+    if not tech["ema_ok"]:
+        return None  # EMA5 must be above EMA9 on daily
+
+    if (tech["current_price"] or 0) < 5:
+        return None  # minimum price $5 for swings
+
     support_val   = tech["support_val"] or price * 0.95
     support_label = tech["support_label"] or "SMA50"
     entry = round(support_val * 1.005, 2)
@@ -1276,4 +1284,4 @@ if __name__ == "__main__":
     print("  Trading Screener is running!")
     print("  Open your browser to: http://localhost:5000")
     print("="*52 + "\n")
-    app.run(debug=False, port=5000)
+    app.run(debug=False, host="0.0.0.0", port=5000)
