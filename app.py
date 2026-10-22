@@ -20,6 +20,7 @@ import yfinance as yf
 from datetime import datetime, time as dtime
 import pytz
 import os
+import re
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -570,6 +571,175 @@ def news_debug():
     t = (request.args.get("t") or "AAPL").upper()
     items, dbg = get_news(t, with_debug=True)
     return jsonify({"ticker": t, "sources_tried": dbg, "headlines": items})
+
+
+
+# ══════════════════════════════════════════════════════════════
+#  EARNINGS, FLOAT, CATALYST QUALITY  (added to every card)
+# ══════════════════════════════════════════════════════════════
+_earn_cache, _float_cache = {}, {}
+_INFO_TTL_EARN, _INFO_TTL_FLOAT = 6 * 3600, 12 * 3600
+
+
+def _fmt_shares(n):
+    if not n:
+        return "—"
+    n = float(n)
+    if n >= 1e9: return f"{n/1e9:.2f}B"
+    if n >= 1e6: return f"{n/1e6:.1f}M"
+    if n >= 1e3: return f"{n/1e3:.0f}K"
+    return str(int(n))
+
+
+def get_earnings_info(ticker):
+    """Next earnings date (yfinance calendar). Returns None if unknown."""
+    c = _earn_cache.get(ticker)
+    if c and _time.time() - c[0] < _INFO_TTL_EARN:
+        return c[1]
+    result = None
+    try:
+        cal = yf.Ticker(ticker).calendar
+        dates = []
+        if isinstance(cal, dict):
+            dates = cal.get("Earnings Date") or []
+        elif cal is not None and hasattr(cal, "loc") and "Earnings Date" in getattr(cal, "index", []):
+            dates = [v for v in cal.loc["Earnings Date"].values]
+        if not isinstance(dates, (list, tuple)):
+            dates = [dates]
+        today = datetime.now(ET).date()
+        parsed = []
+        for d in dates:
+            try:
+                parsed.append(pd.Timestamp(d).date())
+            except Exception:
+                pass
+        parsed = sorted(p for p in parsed if (p - today).days >= -3)
+        if parsed:
+            d = parsed[0]
+            days = (d - today).days
+            if days < 0:
+                label, tone = f"Reported {abs(days)}d ago", "blue"
+            elif days == 0:
+                label, tone = "⚠ Earnings TODAY", "red"
+            elif days == 1:
+                label, tone = "⚠ Earnings tomorrow", "red"
+            elif days <= 7:
+                label, tone = f"📅 Earnings in {days}d", "amber"
+            elif days <= 14:
+                label, tone = f"📅 Earnings in {days}d", "blue"
+            else:
+                label, tone = "", ""
+            result = {"date": d.strftime("%b %d"), "days": days, "label": label, "tone": tone}
+    except Exception:
+        result = None
+    _earn_cache[ticker] = (_time.time(), result)
+    return result
+
+
+def get_float_info(ticker):
+    """Float, shares outstanding and short % of float (yfinance .info)."""
+    c = _float_cache.get(ticker)
+    if c and _time.time() - c[0] < _INFO_TTL_FLOAT:
+        return c[1]
+    result = None
+    try:
+        info = yf.Ticker(ticker).info or {}
+        fl  = info.get("floatShares")
+        so  = info.get("sharesOutstanding")
+        sp  = info.get("shortPercentOfFloat")
+        if fl or so:
+            base = fl or so
+            tier = ("micro-float" if base < 10e6 else "low float" if base < 20e6
+                    else "moderate float" if base < 50e6 else "large float")
+            result = {"float": fl, "float_fmt": _fmt_shares(fl) if fl else "—",
+                      "shares_out_fmt": _fmt_shares(so), "tier": tier,
+                      "short_pct": round(sp * 100, 1) if isinstance(sp, (int, float)) and sp else None,
+                      "approx": not fl}
+    except Exception:
+        result = None
+    if result:
+        _float_cache[ticker] = (_time.time(), result)
+    return result
+
+
+_BEARISH = [
+    (r"\b(public|direct|stock|share|common stock|equity|underwritten|secondary|follow-on|registered direct)\s+offering\b", "Offering"),
+    (r"\b(private placement|at-the-market|atm (offering|program)|shelf registration)\b", "Offering"),
+    (r"\bregistered direct\b", "Offering"),
+    (r"(?<!non-)(?<!non )\bdilut", "Dilution"),
+    (r"going concern", "Going concern"),
+    (r"reverse (stock )?split", "Reverse split"),
+    (r"delist|deficiency notice|non-?compliance", "Delisting risk"),
+    (r"\bhalt(ed)?\b|trading halt", "Halt"),
+    (r"bankrupt|chapter 11", "Bankruptcy"),
+    (r"subpoena|(sec|doj) investigation", "Investigation"),
+    (r"short (seller )?report", "Short report"),
+    (r"convertible (senior )?notes?|warrant inducement|warrants? exercise", "Convertible/warrants"),
+    (r"\bdowngrade", "Downgrade"),
+]
+_BULLISH = [
+    (r"\bfda (approv|clear|grant|fast track|breakthrough)", "FDA"),
+    (r"positive (topline |phase|results|data|trial)|met (its |the )?primary endpoint", "Positive data"),
+    (r"awarded|wins? (a )?(\$[\d.,]+ ?\w+ )?contract|contract (win|award)|purchase order", "Contract"),
+    (r"strategic partnership|collaboration agreement|partnership with", "Partnership"),
+    (r"to be acquired|acquired by|buyout|takeover|definitive agreement to be", "Buyout/M&A"),
+    (r"\bupgrade", "Upgrade"),
+    (r"beats?\b.*(estimate|expectation)|record (revenue|quarter|sales)|raises? (full-year |fy )?(guidance|outlook)", "Earnings beat"),
+    (r"uplist", "Uplist"),
+]
+_BEAR_RE = [(re.compile(p, re.I), l) for p, l in _BEARISH]
+_BULL_RE = [(re.compile(p, re.I), l) for p, l in _BULLISH]
+
+
+def analyze_catalyst(news):
+    """Tag each headline bullish/bearish and summarise fresh (<72h) catalysts."""
+    bear, bull = [], []
+    for n in news or []:
+        title = n.get("title", "")
+        n["tag"], n["tag_label"] = None, None
+        for rx, label in _BEAR_RE:
+            if rx.search(title):
+                n["tag"], n["tag_label"] = "bearish", label; break
+        if not n["tag"]:
+            for rx, label in _BULL_RE:
+                if rx.search(title):
+                    n["tag"], n["tag_label"] = "bullish", label; break
+        age = n.get("age_hours")
+        if n["tag"] and age is not None and age < 72:
+            (bear if n["tag"] == "bearish" else bull).append(n["tag_label"])
+    uniq = lambda xs: list(dict.fromkeys(xs))
+    bear, bull = uniq(bear), uniq(bull)
+    return {"bearish": bear, "bullish": bull,
+            "flag": "bearish" if bear else ("bullish" if bull else None)}
+
+
+def prefetch_info(tickers, floats=True):
+    """Warm the earnings/float caches in parallel so card building stays fast."""
+    import concurrent.futures
+    def work(t):
+        get_earnings_info(t)
+        if floats:
+            get_float_info(t)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+            list(ex.map(work, tickers))
+    except Exception as e:
+        print(f"  prefetch_info error: {e}")
+
+
+def enrich_card(card, floats=True):
+    """Attach earnings, float and catalyst-quality info to a finished card."""
+    if not card or card.get("error"):
+        return card
+    t = card.get("ticker")
+    try:
+        card["earnings"] = get_earnings_info(t)
+        card["catalyst"] = analyze_catalyst(card.get("news"))
+        if floats:
+            card["float_info"] = get_float_info(t)
+    except Exception as e:
+        print(f"  enrich_card error {t}: {e}")
+    return card
 
 
 def get_extended_hours_price(ticker, prev_close):
@@ -1681,6 +1851,7 @@ def build_day_sq_response(filters, label, session, is_squeeze=False, exclude_tic
     print(f"  Fetching TradingView data for {len(tickers)} {label} tickers ({tv_interval})...")
     tv_data = get_tv_technicals_batch(tickers, interval=tv_interval)
 
+    prefetch_info(tickers, floats=True)
     cards = []
     for _, row in raw.iterrows():
         try:
@@ -1690,6 +1861,7 @@ def build_day_sq_response(filters, label, session, is_squeeze=False, exclude_tic
             tv   = tv_data.get(ticker)
             card = build_day_card_tv(row, session, tv)
             if card:
+                enrich_card(card, floats=True)
                 if is_squeeze:
                     card["squeeze"]     = True
                     card["short_float"] = str(row.get("Short Float", "—"))
@@ -1745,6 +1917,7 @@ def run_swings():
     tickers = raw["Ticker"].tolist()
     print(f"  Fetching TradingView daily data for {len(tickers)} swing tickers...")
     tv_daily = get_tv_technicals_batch(tickers, interval="1d")
+    prefetch_info(tickers, floats=False)
     cards = []
     for _, row in raw.iterrows():
         try:
@@ -1752,7 +1925,7 @@ def run_swings():
             tv_day = tv_daily.get(ticker)
             card   = build_swing_card_tv(row, None, tv_day)
             if card:
-                cards.append(card)
+                cards.append(enrich_card(card, floats=False))
         except Exception as e:
             print(f"Swing card error {row.get('Ticker')}: {e}")
     sectors = sorted(set(c["sector"] for c in cards if c.get("sector")))
@@ -1794,12 +1967,13 @@ def run_screener():
         tickers = raw["Ticker"].tolist()
         print(f"  Fetching TradingView daily data for {len(tickers)} swing tickers...")
         tv_daily = get_tv_technicals_batch(tickers, interval="1d")
+        prefetch_info(tickers, floats=False)
         cards = []
         for _, row in raw.iterrows():
             try:
                 card = build_swing_card_tv(row, None, tv_daily.get(str(row.get("Ticker", ""))))
                 if card:
-                    cards.append(card)
+                    cards.append(enrich_card(card, floats=False))
             except Exception as e:
                 print(f"  Swing card error {row.get('Ticker')}: {e}")
         sectors = sorted(set(c["sector"] for c in cards if c.get("sector")))
@@ -1956,7 +2130,7 @@ def analyze_tickers():
     cards = []
     for ticker in tickers:
         try:
-            card = build_manual_card(ticker, mode, session)
+            card = enrich_card(build_manual_card(ticker, mode, session), floats=(mode != 'swing'))
             cards.append(card)
         except Exception as e:
             cards.append({"ticker": ticker, "error": str(e)})

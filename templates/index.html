@@ -846,6 +846,41 @@ function extensionBadgeHTML(d) {
   return `<span class="badge ${m[0]}" title="${d.extension_detail||''}">${m[1]}</span>`;
 }
 
+function earningsBadgeHTML(d) {
+  const e = d.earnings;
+  if (!e || !e.label) return '';
+  const cls = {red:'b-red', amber:'b-amber', blue:'b-blue'}[e.tone] || '';
+  return `<span class="badge ${cls}" title="Next earnings: ${e.date}">${e.label}</span>`;
+}
+
+function catalystBadgeHTML(d) {
+  const c = d.catalyst;
+  if (!c || !c.flag) return '';
+  if (c.flag === 'bearish')
+    return `<span class="badge b-red" title="Fresh bearish headline(s) in the last 72h: ${c.bearish.join(', ')}">🚩 ${c.bearish.slice(0,2).join(' / ')}</span>`;
+  return `<span class="badge b-green" title="Fresh bullish headline(s) in the last 72h: ${c.bullish.join(', ')}">✅ ${c.bullish.slice(0,2).join(' / ')}</span>`;
+}
+
+function floatBadgeHTML(d) {
+  const f = d.float_info;
+  if (!f) return '';
+  const cls = f.tier === 'micro-float' ? 'b-red' : f.tier === 'low float' ? 'b-amber' : '';
+  const style = cls ? '' : 'style="background:var(--bg3);color:var(--text3);border:1px solid var(--border)"';
+  return `<span class="badge ${cls}" ${style} title="${f.tier}${f.short_pct != null ? ' · short ' + f.short_pct + '% of float' : ''}">Float ${f.float_fmt}${f.approx ? '*' : ''}</span>`;
+}
+
+function floatBlockHTML(d) {
+  const f = d.float_info, e = d.earnings;
+  if (!f && !e) return '';
+  return `<div class="plan-block">
+    <div class="plan-title">Float &amp; events</div>
+    ${f ? `<div class="plan-row"><span class="plan-key">Float</span><span class="plan-val v-plain">${f.float_fmt}${f.approx ? ' (shares outstanding — float unavailable)' : ''} &nbsp;<span style="font-size:11px;color:var(--text3)">${f.tier}</span></span></div>
+    <div class="plan-row"><span class="plan-key">Shares outstanding</span><span class="plan-val v-plain">${f.shares_out_fmt}</span></div>
+    ${f.short_pct != null ? `<div class="plan-row"><span class="plan-key">Short % of float</span><span class="plan-val ${f.short_pct >= 20 ? 'v-amber' : 'v-plain'}">${f.short_pct}%</span></div>` : ''}` : ''}
+    ${e ? `<div class="plan-row"><span class="plan-key">Next earnings</span><span class="plan-val ${e.days <= 1 && e.days >= 0 ? 'v-red' : e.days <= 7 && e.days >= 0 ? 'v-amber' : 'v-plain'}">${e.date}${e.days >= 0 ? ' (in ' + e.days + 'd)' : ' (reported ' + Math.abs(e.days) + 'd ago)'}</span></div>` : ''}
+  </div>`;
+}
+
 function liveReadHTML(d) {
   const st = d.status; if (!st) return '';
   const r = d.range || {};
@@ -923,6 +958,16 @@ function scoreDayTrade(d) {
     rows.push({label: `Volume ${fmtVol(vol)} (need ≥5M)`, val: '0', hit: false});
   }
 
+  // ── Float / catalyst quality ──
+  if (d.float_info && d.float_info.float && d.float_info.float < 20e6) {
+    score += 1; rows.push({label: `Low float ${d.float_info.float_fmt} (<20M)`, val: '+1', hit: true});
+  }
+  if (d.catalyst && d.catalyst.flag === 'bearish') {
+    score -= 2; rows.push({label: `Bearish catalyst: ${d.catalyst.bearish.join(', ')}`, val: '-2', hit: false});
+  } else if (d.catalyst && d.catalyst.flag === 'bullish') {
+    score += 1; rows.push({label: `Bullish catalyst: ${d.catalyst.bullish.join(', ')}`, val: '+1', hit: true});
+  }
+
   // ── Live read (only when the backend supplied it) ──
   if (d.status) {
     const c = d.status.code;
@@ -994,6 +1039,14 @@ function scoreSwing(d) {
     score += 1; rows.push({label: `Rel Vol ${rv}x (≥1.5x)`, val: '+1', hit: true});
   } else {
     rows.push({label: `Rel Vol ${rv}x (need ≥1.5x)`, val: '0', hit: false});
+  }
+
+  // Earnings risk and catalyst quality
+  if (d.earnings && d.earnings.days >= 0 && d.earnings.days <= 7) {
+    score -= 2; rows.push({label: `Earnings in ${d.earnings.days}d (binary risk)`, val: '-2', hit: false});
+  }
+  if (d.catalyst && d.catalyst.flag === 'bearish') {
+    score -= 1; rows.push({label: `Bearish catalyst: ${d.catalyst.bearish.join(', ')}`, val: '-1', hit: false});
   }
 
   // Over/under-extended (distance above SMA20 + RSI)
@@ -1087,6 +1140,7 @@ function newsHTML(news, ticker) {
           : esc(n.title)}
       </div>
       <div class="news-meta">
+        ${n.tag ? `<span class="badge ${n.tag === 'bearish' ? 'b-red' : 'b-green'}">${n.tag === 'bearish' ? '🚩' : '✅'} ${esc(n.tag_label)}</span>` : ''}
         <span>${esc(n.source || 'Unknown')}</span>
         ${n.time ? `<span>${esc(n.time)}${n.age_hours != null ? ' · ' + newsAgeLabel(n.age_hours) : ''}</span>` : ''}
       </div>
@@ -1151,7 +1205,7 @@ function dayCardHTML(d, idx, prefix) {
         <span class="ind">${d.industry || d.sector || ''}</span>
         ${scoreBadgeHTML(score)}
         ${d.data_source === 'TradingView (live)' ? '<span class="badge b-green" title="Live TradingView data">📡 Live</span>' : '<span class="badge" style="background:var(--bg3);color:var(--text3);border:1px solid var(--border)" title="Delayed yfinance data">⏱ Delayed</span>'}
-        ${sqBadge}${statusBadgeHTML(d.status)}${emaBadge}${newsBadge}${dayChartBtns(d.ticker)}
+        ${sqBadge}${statusBadgeHTML(d.status)}${floatBadgeHTML(d)}${earningsBadgeHTML(d)}${catalystBadgeHTML(d)}${emaBadge}${newsBadge}${dayChartBtns(d.ticker)}
       </div>
       <div class="card-right">
         <span class="price-val">$${parseFloat(d.price).toFixed(2)}</span>
@@ -1169,6 +1223,7 @@ function dayCardHTML(d, idx, prefix) {
       ${extHTML(d.ext)}
       <div class="card-detail">
         ${liveReadHTML(d)}
+        ${floatBlockHTML(d)}
         ${scoreBreakdownHTML(scored.rows)}
         <div class="grid-4">
           <div class="tile"><div class="tile-lbl">${lvl.label} high</div><div class="tile-val v-green">${fmt(lvl.key_high)}</div></div>
@@ -1240,7 +1295,7 @@ function swingCardHTML(d, idx) {
         ${scoreBadgeHTML(score)}
         ${d.data_source === 'TradingView (live)' ? '<span class="badge b-green" title="Live TradingView data">📡 Live</span>' : '<span class="badge" style="background:var(--bg3);color:var(--text3);border:1px solid var(--border)" title="Delayed yfinance data">⏱ Delayed</span>'}
         <span class="badge b-blue">200MA Rising ↑</span>
-        ${extensionBadgeHTML(d)}${emaBadge}${newsBadge}${swingChartBtns(d.ticker)}
+        ${extensionBadgeHTML(d)}${earningsBadgeHTML(d)}${catalystBadgeHTML(d)}${emaBadge}${newsBadge}${swingChartBtns(d.ticker)}
       </div>
       <div class="card-right">
         <span class="price-val">$${parseFloat(d.price).toFixed(2)}</span>
@@ -1256,6 +1311,7 @@ function swingCardHTML(d, idx) {
         ${newsHTML(d.news, d.ticker)}
       </div>
       <div class="card-detail">
+        ${floatBlockHTML(d)}
         ${scoreBreakdownHTML(scored.rows)}
         <div class="grid-4">
           <div class="tile"><div class="tile-lbl">52-wk high</div><div class="tile-val v-green">${fmt(lvl.week52_high)}</div></div>
