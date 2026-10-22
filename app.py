@@ -348,15 +348,14 @@ def safe_float(val):
         return 0.0
 
 
-def get_news(ticker):
+def news_from_yfinance(ticker):
     """Recent headlines via yfinance (handles old and new Yahoo response shapes).
     Each item: title, url, source, time (ET text), age_hours (None if unknown). Newest first."""
     news = []
     try:
         items = yf.Ticker(ticker).news or []
     except Exception as e:
-        print(f"  news fetch failed for {ticker}: {type(e).__name__}")
-        return news
+        raise RuntimeError(f"yfinance news failed: {type(e).__name__}: {str(e)[:100]}")
     now_utc = datetime.now(pytz.utc)
     for item in items[:10]:
         try:
@@ -395,6 +394,182 @@ def get_news(ticker):
             continue
     news.sort(key=lambda n: (n["age_hours"] is None, n["age_hours"] if n["age_hours"] is not None else 0))
     return news[:6]
+
+
+def _news_item(title, url, source, dt_utc):
+    ts, age = "", None
+    if dt_utc:
+        ts  = dt_utc.astimezone(ET).strftime("%b %d  %I:%M %p ET")
+        age = round((datetime.now(pytz.utc) - dt_utc).total_seconds() / 3600.0, 1)
+    return {"title": title, "url": url, "source": source or "Unknown", "time": ts, "age_hours": age}
+
+
+def news_from_yahoo_search(ticker):
+    """Yahoo's public search endpoint (separate from yfinance's news call)."""
+    import requests
+    r = requests.get("https://query2.finance.yahoo.com/v1/finance/search",
+                     params={"q": ticker, "newsCount": 8, "quotesCount": 0},
+                     headers={"User-Agent": FINVIZ_HEADERS["User-Agent"]}, timeout=10)
+    r.raise_for_status()
+    out = []
+    for n in r.json().get("news", []):
+        t = n.get("providerPublishTime")
+        dt = datetime.fromtimestamp(t, tz=pytz.utc) if isinstance(t, (int, float)) and t > 0 else None
+        if n.get("title"):
+            out.append(_news_item(n["title"], n.get("link", ""), n.get("publisher", ""), dt))
+    return out
+
+
+def news_from_google(ticker):
+    """Google News RSS — no key needed, rarely blocked."""
+    import requests
+    from xml.etree import ElementTree as ET_xml
+    from email.utils import parsedate_to_datetime
+    r = requests.get("https://news.google.com/rss/search",
+                     params={"q": f"{ticker} stock when:7d", "hl": "en-US", "gl": "US", "ceid": "US:en"},
+                     headers={"User-Agent": FINVIZ_HEADERS["User-Agent"]}, timeout=10)
+    r.raise_for_status()
+    out = []
+    for it in ET_xml.fromstring(r.content).iter("item"):
+        title = (it.findtext("title") or "").strip()
+        src_el = it.find("source")
+        source = (src_el.text or "").strip() if src_el is not None else ""
+        if source and title.endswith(" - " + source):
+            title = title[: -len(source) - 3]
+        dt = None
+        try:
+            dt = parsedate_to_datetime(it.findtext("pubDate"))
+            dt = dt if dt.tzinfo else pytz.utc.localize(dt)
+            dt = dt.astimezone(pytz.utc)
+        except Exception:
+            pass
+        if title:
+            out.append(_news_item(title, (it.findtext("link") or "").strip(), source, dt))
+        if len(out) >= 8:
+            break
+    out.sort(key=lambda n: (n["age_hours"] is None, n["age_hours"] or 0))
+    return out
+
+
+_fv_news_fail = {"count": 0, "skip_until": 0.0, "dumped": False}
+
+def _parse_finviz_time(txt, last_date):
+    """Finviz shows 'Oct-21-26 07:40PM' on a new day, then just '07:40PM' for later rows."""
+    import re
+    txt = (txt or "").strip()
+    m = re.search(r"([A-Z][a-z]{2})-(\d{1,2})-(\d{2})\s+(\d{1,2}:\d{2}\s?[AP]M)", txt)
+    d = None
+    if m:
+        d = (m.group(1), m.group(2), m.group(3)); t = m.group(4)
+    else:
+        m2 = re.search(r"(\d{1,2}:\d{2}\s?[AP]M)", txt)
+        if not m2:
+            return None, last_date
+        t = m2.group(1)
+        if re.search(r"Today", txt, re.I):
+            now = datetime.now(ET); d = (now.strftime("%b"), str(now.day), now.strftime("%y"))
+        else:
+            d = last_date
+    if not d:
+        return None, last_date
+    try:
+        dt = datetime.strptime(f"{d[0]} {d[1]} {d[2]} {t.replace(' ', '')}", "%b %d %y %I:%M%p")
+        return ET.localize(dt).astimezone(pytz.utc), d
+    except Exception:
+        return None, d
+
+
+def news_from_finviz(ticker):
+    """Headlines from the Finviz quote page. Fails fast and backs off if Finviz blocks us."""
+    import requests, re
+    if _time.time() < _fv_news_fail["skip_until"]:
+        raise RuntimeError("finviz news paused after repeated failures (retrying in a few minutes)")
+    try:
+        r = requests.get("https://finviz.com/quote.ashx", params={"t": ticker, "p": "d"},
+                         headers=FINVIZ_HEADERS, timeout=8)
+        r.raise_for_status()
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(r.text, "lxml")
+        out, last_date = [], None
+
+        # Layout A (classic): <table id="news-table"> rows of [time | headline link]
+        tbl = soup.select_one("#news-table")
+        rows = tbl.select("tr") if tbl else []
+        for tr in rows:
+            tds = tr.find_all("td")
+            link = tr.select_one("a[href]")
+            if len(tds) < 2 or not link:
+                continue
+            dt, last_date = _parse_finviz_time(tds[0].get_text(" ", strip=True), last_date)
+            src_el = tr.select_one(".news-link-right span, .news-link-right")
+            out.append(_news_item(link.get_text(strip=True), link["href"],
+                                  (src_el.get_text(strip=True).strip("()") if src_el else "Finviz"), dt))
+
+        # Layout B (generic fallback for the redesigned page): external links inside any 'news' container
+        if not out:
+            seen = set()
+            for cont in soup.select('[id*="news" i], [class*="news" i]'):
+                for link in cont.select('a[href^="http"]'):
+                    href, title = link["href"], link.get_text(" ", strip=True)
+                    if "finviz.com" in href or len(title) < 25 or href in seen:
+                        continue
+                    seen.add(href)
+                    ctx_txt = (link.find_parent(["tr", "div", "li"]) or link).get_text(" ", strip=True)
+                    dt, last_date = _parse_finviz_time(ctx_txt, last_date)
+                    out.append(_news_item(title, href, "Finviz", dt))
+
+        if not out:
+            if not _fv_news_fail["dumped"]:
+                try:
+                    with open("finviz_quote_debug.html", "w", encoding="utf-8") as f:
+                        f.write(r.text)
+                    _fv_news_fail["dumped"] = True
+                    print("  !! Could not read Finviz news layout — saved finviz_quote_debug.html (send to Claude)")
+                except Exception:
+                    pass
+            raise RuntimeError("no headlines found on Finviz quote page")
+        _fv_news_fail["count"] = 0
+        out.sort(key=lambda n: (n["age_hours"] is None, n["age_hours"] or 0))
+        return out
+    except Exception:
+        _fv_news_fail["count"] += 1
+        if _fv_news_fail["count"] >= 3:
+            _fv_news_fail["skip_until"] = _time.time() + 300
+            _fv_news_fail["count"] = 0
+        raise
+
+
+_news_cache = {}
+NEWS_SOURCES = [("finviz", news_from_finviz), ("yfinance", news_from_yfinance), ("yahoo-search", news_from_yahoo_search), ("google-news", news_from_google)]
+
+def get_news(ticker, with_debug=False):
+    """Try each news source in turn; cache successful results for 10 minutes."""
+    now = _time.time()
+    if not with_debug:
+        c = _news_cache.get(ticker)
+        if c and now - c[0] < 600:
+            return c[1]
+    debug = []
+    for name, fn in NEWS_SOURCES:
+        try:
+            items = fn(ticker) or []
+            debug.append({"source": name, "count": len(items)})
+            if items:
+                items = items[:6]
+                _news_cache[ticker] = (now, items)
+                return (items, debug) if with_debug else items
+        except Exception as e:
+            debug.append({"source": name, "error": f"{type(e).__name__}: {str(e)[:150]}"})
+    if debug and not with_debug:
+        print(f"  news: no headlines for {ticker} ({debug})")
+    return ([], debug) if with_debug else []
+
+
+@app.route("/api/news/debug")
+def news_debug():
+    t = (request.args.get("t") or "AAPL").upper()
+    items, dbg = get_news(t, with_debug=True)
+    return jsonify({"ticker": t, "sources_tried": dbg, "headlines": items})
 
 
 def get_extended_hours_price(ticker, prev_close):
