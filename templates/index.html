@@ -158,6 +158,36 @@
   .rev-table { width:100%; border-collapse:collapse; font-size:12px; margin-top:10px; }
   .rev-table th, .rev-table td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); white-space:nowrap; }
   .rev-wrap { overflow-x:auto; }
+  /* view modes */
+  body.mode-plan .view-validate { display: none; }
+  body.mode-validate .view-plan { display: none; }
+  .vm-group { margin-left: auto; display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  .sort-btn.vm-active { background: var(--bg3); color: var(--text); border-color: var(--border2); }
+  /* price ladder */
+  .lad-row { display: grid; grid-template-columns: 78px 14px 1fr auto; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .lad-row:last-child { border-bottom: none; }
+  .lad-p { font-family: var(--mono); font-weight: 700; text-align: right; }
+  .lad-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text3); justify-self: center; }
+  .lad-l { color: var(--text2); min-width: 0; }
+  .lad-d { font-family: var(--mono); font-size: 11px; color: var(--text3); white-space: nowrap; }
+  .lad-target .lad-p, .lad-target .lad-dot { color: var(--green); } .lad-target .lad-dot { background: var(--green); }
+  .lad-resist .lad-p { color: var(--red); } .lad-resist .lad-dot { background: var(--red); }
+  .lad-flip .lad-p, .lad-support .lad-p { color: var(--blue); } .lad-flip .lad-dot, .lad-support .lad-dot { background: var(--blue); }
+  .lad-dyn .lad-p { color: var(--purple); } .lad-dyn .lad-dot { background: var(--purple); } .lad-dyn .lad-l { font-style: italic; }
+  .lad-entry .lad-p { color: var(--amber); } .lad-entry .lad-dot { background: var(--amber); border-radius: 2px; }
+  .lad-now { background: rgba(255,255,255,0.06); border-radius: 6px; padding: 6px 4px; border-bottom: none; margin: 2px 0; }
+  .lad-now .lad-p { color: var(--text); } .lad-now .lad-l { color: var(--text); font-weight: 700; } .lad-now .lad-dot { background: var(--text); }
+  /* checklist */
+  .chk-row { display: grid; grid-template-columns: 20px 1fr auto; gap: 8px; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .chk-row:last-child { border-bottom: none; }
+  .chk-ic { font-weight: 800; text-align: center; }
+  .chk-pass .chk-ic { color: var(--green); } .chk-fail .chk-ic { color: var(--red); } .chk-warn .chk-ic { color: var(--amber); } .chk-unk .chk-ic { color: var(--text3); }
+  .chk-d { color: var(--text3); font-size: 11px; text-align: right; }
+  .chk-fail .chk-d { color: var(--red); } .chk-warn .chk-d { color: var(--amber); }
+  details.more-details { margin-top: 10px; }
+  details.more-details > summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text2); padding: 6px 0; list-style: none; }
+  details.more-details > summary::before { content: '▸ '; }
+  details.more-details[open] > summary::before { content: '▾ '; }
   .b-blue   { background: var(--blue-bg);   color: var(--blue);   border: 1px solid rgba(77,166,255,0.18); }
   .b-purple { background: var(--purple-bg); color: var(--purple); border: 1px solid rgba(179,157,219,0.18); }
 
@@ -465,6 +495,11 @@
     <button class="sort-btn" id="sort-relvol" onclick="setSort('relvol')">Rel Vol <span class="sort-arrow" id="arr-relvol">↕</span></button>
     <button class="sort-btn" id="sort-rval"   onclick="setSort('rval')">R Value <span class="sort-arrow" id="arr-rval">↕</span></button>
     <button class="sort-btn" id="sort-score"  onclick="setSort('score')">Score <span class="sort-arrow" id="arr-score">↕</span></button>
+    <span class="vm-group"><span class="sort-label">Card view</span>
+      <button class="sort-btn" id="vm-auto" onclick="setViewPref('auto')" title="Plan view outside market hours, Validate view during market hours">Auto</button>
+      <button class="sort-btn" id="vm-plan" onclick="setViewPref('plan')" title="Evening / pre-market: news, float, levels">Plan</button>
+      <button class="sort-btn" id="vm-validate" onclick="setViewPref('validate')" title="Market hours: playbook checklist">Validate</button>
+    </span>
   </div>
 
   <div class="fav-bar" id="fav-bar">
@@ -970,7 +1005,7 @@ function liveReadHTML(d) {
       ${r.note ? `<div class="plan-row"><span class="plan-key">Room vs ATR</span><span class="plan-val v-plain">${r.note}</span></div>` : ''}
       ${r.atr ? `<div class="plan-row"><span class="plan-key">ATR (14d)</span><span class="plan-val v-amber">${fmt(r.atr)}</span></div>` : ''}
     </div>
-    ${sup.length ? `<div class="plan-block"><div class="plan-title">Support &amp; flip levels below price</div>${supRows}</div>` : ''}`;
+    `;
 }
 
 function scoreDayTrade(d) {
@@ -1240,15 +1275,197 @@ function extHTML(ext) {
 }
 
 // ── Day / Squeeze card HTML ────────────────────────────────
+// ── Price ladder ───────────────────────────────────────────
+function ladderHTML(d) {
+  const price = parseFloat(d.price);
+  if (!price) return '';
+  const lvl = d.levels || {}, plan = d.plan || {}, em = d.emas || {};
+  const items = [];
+  const add = (p, label, type) => {
+    p = parseFloat(p);
+    if (!p || !isFinite(p)) return;
+    items.push({p, label, type});
+  };
+  add(plan.t1, `Target 1 — ${plan.t1_ref || 'swing high'}`, 'target');
+  add(plan.t2, `Target 2 — ${plan.t2_ref || 'next level'}`, 'target');
+  add(plan.t3, `Target 3 — ${plan.t3_ref || '6-month high'}`, 'target');
+  if (plan.resistance) add(plan.resistance, 'Resistance — must clear &amp; hold', 'resist');
+  (lvl.swing_highs || []).forEach(x => add(x, 'Swing high', 'resist'));
+  add(lvl.high_6m, '6-month high', 'level');
+  add(lvl.key_high, `${lvl.label || 'Prior day'} high`, 'level');
+  add(lvl.hod, 'High of day', 'level');
+  add(lvl.lod, 'Low of day', 'level');
+  add(lvl.pm_low, 'Pre-market low', 'level');
+  add(lvl.key_low, `${lvl.label || 'Prior day'} low`, 'level');
+  add(lvl.prev_close, 'Prior close', 'level');
+  add(lvl.high_20d, '20-day high', 'level');
+  add(lvl.low_20d, '20-day low', 'level');
+  add(lvl.low_6m, '6-month low', 'level');
+  add(lvl.vwap, (lvl.vwap_src || '').startsWith('live') ? 'VWAP (live)' : 'VWAP (proxy)', 'dyn');
+  add(em.ema5, `EMA5${em.src ? ' (' + em.src + ')' : ''}`, 'dyn');
+  add(em.ema9, `EMA9${em.src ? ' (' + em.src + ')' : ''}`, 'dyn');
+  (d.supports || []).forEach(s => add(s.level, s.kind + (s.held_min != null ? ` · held ${s.held_min}m` : '') + (s.retested ? ' · retested ✓' : ''), s.flipped ? 'flip' : 'support'));
+
+  // drop far-away reference levels (keep targets/resistance always)
+  const keep = items.filter(i => ['target','resist'].includes(i.type) || Math.abs(i.p - price) / price <= 0.35);
+  // merge levels within 0.35% of each other
+  const rank = {target:0, resist:1, flip:2, support:3, dyn:4, level:5};
+  keep.sort((a, b) => b.p - a.p);
+  const merged = [];
+  for (const it of keep) {
+    const last = merged[merged.length - 1];
+    if (last && Math.abs(last.p - it.p) / price < 0.0035) {
+      if (!last.label.toLowerCase().includes(it.label.toLowerCase())) last.label += ' · ' + it.label;
+      if (rank[it.type] < rank[last.type]) last.type = it.type;
+    } else merged.push({...it});
+  }
+  // trim to the most useful ~16 rows: drop farthest plain levels first
+  while (merged.length > 16) {
+    let idx = -1, far = -1;
+    merged.forEach((m, i) => { if (m.type === 'level') { const dd = Math.abs(m.p - price); if (dd > far) { far = dd; idx = i; } } });
+    if (idx < 0) break;
+    merged.splice(idx, 1);
+  }
+  const rows = merged.concat([{p: price, label: 'Price now', type: 'now'}]).sort((a, b) => b.p - a.p);
+  let entryRow = '';
+  if (plan.entry_low && plan.entry_high && !plan.resistance) {
+    rows.push({p: (plan.entry_low + plan.entry_high) / 2, label: `Entry zone ${fmt(plan.entry_low)} – ${fmt(plan.entry_high)} (${plan.entry_ref || 'EMA5 / VWAP'})`, type: 'entry', band: true});
+    rows.sort((a, b) => b.p - a.p);
+  }
+  const html = rows.map(r => {
+    const pct = ((r.p - price) / price * 100);
+    const dist = r.type === 'now' ? '' : (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
+    const pTxt = r.band ? '' : fmt(r.p);
+    return `<div class="lad-row lad-${r.type}"><span class="lad-p">${r.type === 'now' ? '▶ ' : ''}${pTxt}</span><span class="lad-dot"></span><span class="lad-l">${r.label}</span><span class="lad-d">${dist}</span></div>`;
+  }).join('');
+  return `<div class="plan-block"><div class="plan-title">Price ladder — supply above, demand below</div>${html}</div>`;
+}
+
+// ── Playbook checklist (validate view) ─────────────────────
+function checklistHTML(d) {
+  const items = [];
+  const price = parseFloat(d.price) || 0;
+  const lvl = d.levels || {}, plan = d.plan || {}, em = d.emas || {};
+  const liveVwap = (lvl.vwap_src || '').startsWith('live');
+  const vwap = parseFloat(lvl.vwap) || 0;
+  const e5 = parseFloat(em.ema5) || 0, e9 = parseFloat(em.ema9) || 0;
+  const add = (state, label, detail) => items.push({state, label, detail: detail || ''});
+
+  add(d.ema_ok === true ? 'pass' : d.ema_ok === false ? 'fail' : 'unk', 'EMA5 above EMA9', em.src ? `${em.src} bars` : '');
+  if (liveVwap && e5 && e9 && vwap) {
+    const both = e5 > vwap && e9 > vwap;
+    add(both ? 'pass' : 'fail', 'EMA5 &amp; EMA9 both above VWAP', `VWAP ${fmt(vwap)}`);
+  } else add('unk', 'EMA5 &amp; EMA9 both above VWAP', 'live VWAP not available');
+  if (liveVwap && vwap && price) add(price > vwap ? 'pass' : 'fail', 'Price above VWAP', `${((price - vwap) / vwap * 100).toFixed(1)}% vs VWAP`);
+  else add('unk', 'Price above VWAP', 'live VWAP not available');
+
+  const rv = parseFloat(d.relvol) || 0;
+  const vol = typeof d.volume === 'number' ? d.volume : parseFloat(String(d.volume).replace(/,/g, '')) || 0;
+  add(rv >= 2 && vol >= 1e6 ? 'pass' : (rv >= 1.5 || vol >= 1e6) ? 'warn' : 'fail', 'Volume &amp; relative volume', `${fmtRelVol(d.relvol)} · ${fmtVol(vol)}`);
+
+  if (plan.resistance) {
+    const gap = ((plan.resistance - price) / price * 100).toFixed(1);
+    add('fail', 'Clear of overhead resistance', `${fmt(plan.resistance)} is ${gap}% above`);
+  } else add('pass', 'Clear of overhead resistance', '');
+
+  const rg = d.range || {};
+  add({plenty:'pass', open:'pass', limited:'warn', tight:'fail'}[rg.verdict] || 'unk', 'Room left vs ATR',
+      rg.room_t1_atr != null ? `${rg.room_t1_atr}× ATR to T1` : (rg.verdict === 'open' ? 'open air' : ''));
+
+  const st = d.status && d.status.code;
+  const stState = {in_zone:'pass', retest_hold:'pass', above_zone:'warn', testing:'warn', below_res:'warn', extended:'fail', below_vwap:'fail', below_zone:'fail'}[st] || 'unk';
+  add(stState, 'Price vs entry zone', d.status ? d.status.label.replace(/^\S+\s/, '') : '');
+
+  const c = d.catalyst;
+  if (c && c.flag === 'bearish') add('fail', 'No bearish catalyst', c.bearish.join(', '));
+  else if (c && c.flag === 'bullish') add('pass', 'No bearish catalyst', 'bullish: ' + c.bullish.join(', '));
+  else add((d.news || []).length ? 'pass' : 'unk', 'No bearish catalyst', (d.news || []).length ? 'no flags in recent news' : 'no news found');
+
+  const e = d.earnings;
+  if (e && e.days >= 0 && e.days <= 1) add('fail', 'No earnings today / tomorrow', e.label.replace(/^\S+\s/, ''));
+  else if (e) add('pass', 'No earnings today / tomorrow', e.days >= 0 ? `next ${e.date}` : '');
+  else add('unk', 'No earnings today / tomorrow', 'date unknown');
+
+  const f = d.float_info;
+  if (f && f.float) add(f.float <= 100e6 ? 'pass' : 'warn', 'Float within range (≤100M)', `${f.float_fmt} · ${f.tier}`);
+  else add('unk', 'Float within range (≤100M)', 'unknown');
+
+  const pass = items.filter(i => i.state === 'pass').length;
+  const fails = items.filter(i => i.state === 'fail');
+  const total = items.filter(i => i.state !== 'unk').length;
+  const icon = {pass:'✓', fail:'✗', warn:'!', unk:'–'};
+  const rows = items.map(i => `<div class="chk-row chk-${i.state}"><span class="chk-ic">${icon[i.state]}</span><span>${i.label}</span><span class="chk-d">${i.detail}</span></div>`).join('');
+  const tone = fails.length === 0 ? 'v-green' : fails.length <= 2 ? 'v-amber' : 'v-red';
+  return `<div class="plan-block"><div class="plan-title">Playbook check <span class="${tone}" style="margin-left:6px">${pass}/${total} pass${fails.length ? ' · ' + fails.length + ' fail' : ''}</span></div>${rows}</div>`;
+}
+
+function newsInlineHTML(d, n) {
+  const items = (d.news || []).slice(0, n || 3);
+  return `<div class="plan-block"><div class="plan-title">Latest news</div>${newsHTML(items, d.ticker)}</div>`;
+}
+
+function planBlockHTML(d) {
+  const plan = d.plan || {}, lvl = d.levels || {};
+  return `<div class="plan-block">
+    <div class="plan-title">Trade plan</div>
+    ${plan.resistance ? `
+    <div class="plan-row"><span class="plan-key">⏳ Wait for breakout</span><span class="plan-val v-amber">${fmt(plan.resistance)} ← must clear &amp; hold before entry</span></div>
+    <div class="plan-row"><span class="plan-key">Entry after breakout</span><span class="plan-val v-blue">Pullback to EMA5 / VWAP once above ${fmt(plan.resistance)}, then hold</span></div>
+    ` : `
+    <div class="plan-row"><span class="plan-key">Entry zone</span><span class="plan-val v-blue">${fmt(plan.entry_low)} – ${fmt(plan.entry_high)} ← ${plan.entry_ref}</span></div>
+    `}
+    <div class="plan-row"><span class="plan-key">Target 1</span><span class="plan-val v-green">${fmt(plan.t1)} &nbsp;(${rr(plan.rr1)}) ← ${plan.t1_ref || 'nearest swing high'}</span></div>
+    ${plan.t2 ? `<div class="plan-row"><span class="plan-key">Target 2</span><span class="plan-val v-green">${fmt(plan.t2)} &nbsp;(${rr(plan.rr2)}) ← ${plan.t2_ref || (lvl.label + ' high')}</span></div>` : ''}
+    ${plan.t3 ? `<div class="plan-row"><span class="plan-key">Target 3</span><span class="plan-val v-green">${fmt(plan.t3)} &nbsp;(${rr(plan.rr3)}) ← ${plan.t3_ref || '6-month high'}</span></div>` : ''}
+  </div>`;
+}
+
+function emaBlockHTML(d) {
+  const em = d.emas || {};
+  return `<div class="plan-block">
+    <div class="plan-title">EMAs &amp; Moving Averages</div>
+    <div class="plan-row"><span class="plan-key">EMA5${em.src ? ' ('+em.src+')' : ''}</span><span class="plan-val v-plain">${fmt(em.ema5)}</span></div>
+    <div class="plan-row"><span class="plan-key">EMA9${em.src ? ' ('+em.src+')' : ''}</span><span class="plan-val v-plain">${fmt(em.ema9)}</span></div>
+    ${d.sma50  ? `<div class="plan-row"><span class="plan-key">SMA50</span><span class="plan-val v-plain">${fmt(d.sma50)}</span></div>` : ''}
+    ${d.sma200 ? `<div class="plan-row"><span class="plan-key">SMA200</span><span class="plan-val v-plain">${fmt(d.sma200)}</span></div>` : ''}
+    ${d.atr    ? `<div class="plan-row"><span class="plan-key">ATR</span><span class="plan-val v-amber">${fmt(d.atr)} &nbsp;<span style="font-size:11px;color:var(--text3)">avg daily range</span></span></div>` : ''}
+  </div>`;
+}
+
+// ── View mode (Plan = evening/pre-market, Validate = market hours) ──
+let viewPref = 'auto';
+try { viewPref = localStorage.getItem('viewPref') || 'auto'; } catch (e) {}
+
+function marketIsOpenET() {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {timeZone: 'America/New_York', weekday: 'short', hour: 'numeric', minute: 'numeric', hour12: false}).formatToParts(new Date());
+    const g = t => parts.find(p => p.type === t).value;
+    if (['Sat', 'Sun'].includes(g('weekday'))) return false;
+    const mins = (parseInt(g('hour')) % 24) * 60 + parseInt(g('minute'));
+    return mins >= 9 * 60 + 30 && mins < 16 * 60;
+  } catch (e) { return false; }
+}
+
+function applyViewMode() {
+  const mode = viewPref === 'auto' ? (marketIsOpenET() ? 'validate' : 'plan') : viewPref;
+  document.body.classList.toggle('mode-plan', mode === 'plan');
+  document.body.classList.toggle('mode-validate', mode === 'validate');
+  ['auto', 'plan', 'validate'].forEach(m => {
+    const b = document.getElementById('vm-' + m);
+    if (b) b.classList.toggle('vm-active', viewPref === m);
+  });
+}
+
+function setViewPref(m) {
+  viewPref = m;
+  try { localStorage.setItem('viewPref', m); } catch (e) {}
+  applyViewMode();
+}
+
 function dayCardHTML(d, idx, prefix) {
   const id      = prefix + idx;
-  const chgCls  = d.pos ? 'chg-pos' : 'chg-neg';
-  const emaBadge = d.ema_ok
-    ? '<span class="badge b-green">EMA5 &gt; EMA9 ✓</span>'
-    : '<span class="badge b-red">EMA5 &lt; EMA9</span>';
-  const sqBadge = d.squeeze ? '<span class="badge b-amber">⚡ SQUEEZE</span>' : '';
   const newsBadge = newsBadgeHTML(d, id);
-  const lvl = d.levels, plan = d.plan;
+  const lvl = d.levels || {};
   const pmBlock = lvl.pm_high != null ? `
     <div class="plan-block">
       <div class="plan-title">Pre-market session</div>
@@ -1272,47 +1489,18 @@ function dayCardHTML(d, idx, prefix) {
       </div>
       ${extHTML(d.ext)}
       <div class="card-detail">
+        <div class="view-validate">${checklistHTML(d)}</div>
+        <div class="view-plan">${newsInlineHTML(d, 3)}${floatBlockHTML(d)}</div>
         ${liveReadHTML(d)}
-        ${floatBlockHTML(d)}
-        ${scoreBreakdownHTML(scored.rows)}
-        <div class="grid-4">
-          <div class="tile"><div class="tile-lbl">${lvl.label} high</div><div class="tile-val v-green">${fmt(lvl.key_high)}</div></div>
-          <div class="tile"><div class="tile-lbl">${lvl.label} low</div><div class="tile-val v-red">${fmt(lvl.key_low)}</div></div>
-          <div class="tile"><div class="tile-lbl">${lvl.vwap_src && lvl.vwap_src.startsWith('live') ? 'VWAP (live)' : 'VWAP proxy'}</div><div class="tile-val v-amber">${fmt(lvl.vwap)}</div></div>
-          <div class="tile"><div class="tile-lbl">Prev close</div><div class="tile-val v-plain">${fmt(lvl.prev_close)}</div></div>
-          ${lvl.hod != null ? `<div class="tile"><div class="tile-lbl">High of day</div><div class="tile-val v-green">${fmt(lvl.hod)}</div></div>
-          <div class="tile"><div class="tile-lbl">Low of day</div><div class="tile-val v-red">${fmt(lvl.lod)}</div></div>` : ''}
-          <div class="tile"><div class="tile-lbl">6-month high</div><div class="tile-val v-green">${fmt(lvl.high_6m)}</div></div>
-          <div class="tile"><div class="tile-lbl">6-month low</div><div class="tile-val v-red">${fmt(lvl.low_6m)}</div></div>
-          <div class="tile"><div class="tile-lbl">20d range high</div><div class="tile-val v-plain">${fmt(lvl.high_20d)}</div></div>
-          <div class="tile"><div class="tile-lbl">20d range low</div><div class="tile-val v-plain">${fmt(lvl.low_20d)}</div></div>
-        </div>
-        ${lvl.swing_highs && lvl.swing_highs.length > 0 ? `
-        <div class="plan-block">
-          <div class="plan-title">Key swing highs above price</div>
-          ${lvl.swing_highs.map((h, i) => `<div class="plan-row"><span class="plan-key">Swing high ${i+1}</span><span class="plan-val v-green">${fmt(h)}</span></div>`).join('')}
-        </div>` : ''}
-        <div class="plan-block">
-          <div class="plan-title">Trade plan</div>
-          ${plan.resistance ? `
-          <div class="plan-row"><span class="plan-key">⏳ Wait for breakout</span><span class="plan-val v-amber">${fmt(plan.resistance)} ← must clear &amp; hold before entry</span></div>
-          <div class="plan-row"><span class="plan-key">Entry after breakout</span><span class="plan-val v-blue">Pullback to EMA5 / VWAP once above ${fmt(plan.resistance)}, then hold</span></div>
-          ` : `
-          <div class="plan-row"><span class="plan-key">Entry zone</span><span class="plan-val v-blue">${fmt(plan.entry_low)} – ${fmt(plan.entry_high)} ← ${plan.entry_ref}</span></div>
-          `}
-          <div class="plan-row"><span class="plan-key">Target 1</span><span class="plan-val v-green">${fmt(plan.t1)} &nbsp;(${rr(plan.rr1)}) ← ${plan.t1_ref || 'nearest swing high'}</span></div>
-          ${plan.t2 ? `<div class="plan-row"><span class="plan-key">Target 2</span><span class="plan-val v-green">${fmt(plan.t2)} &nbsp;(${rr(plan.rr2)}) ← ${plan.t2_ref || (lvl.label + ' high')}</span></div>` : ''}
-          ${plan.t3 ? `<div class="plan-row"><span class="plan-key">Target 3</span><span class="plan-val v-green">${fmt(plan.t3)} &nbsp;(${rr(plan.rr3)}) ← ${plan.t3_ref || '6-month high'}</span></div>` : ''}
-        </div>
-        <div class="plan-block">
-          <div class="plan-title">EMAs &amp; Moving Averages</div>
-          <div class="plan-row"><span class="plan-key">EMA5${d.emas.src ? ' ('+d.emas.src+')' : ''}</span><span class="plan-val v-plain">${fmt(d.emas.ema5)}</span></div>
-          <div class="plan-row"><span class="plan-key">EMA9${d.emas.src ? ' ('+d.emas.src+')' : ''}</span><span class="plan-val v-plain">${fmt(d.emas.ema9)}</span></div>
-          ${d.sma50  ? `<div class="plan-row"><span class="plan-key">SMA50</span><span class="plan-val v-plain">${fmt(d.sma50)}</span></div>` : ''}
-          ${d.sma200 ? `<div class="plan-row"><span class="plan-key">SMA200</span><span class="plan-val v-plain">${fmt(d.sma200)}</span></div>` : ''}
-          ${d.atr    ? `<div class="plan-row"><span class="plan-key">ATR</span><span class="plan-val v-amber">${fmt(d.atr)} &nbsp;<span style="font-size:11px;color:var(--text3)">avg daily range</span></span></div>` : ''}
-        </div>
-        ${pmBlock}
+        ${ladderHTML(d)}
+        ${planBlockHTML(d)}
+        <details class="more-details">
+          <summary>More details</summary>
+          <div class="view-validate">${newsInlineHTML(d, 3)}${floatBlockHTML(d)}</div>
+          ${scoreBreakdownHTML(scored.rows)}
+          ${emaBlockHTML(d)}
+          ${pmBlock}
+        </details>
       </div>
     </div>
   </div>`;
@@ -1611,6 +1799,9 @@ async function runAll() {
     document.getElementById('run-' + t + '-btn').textContent = '▶';
   });
 }
+
+applyViewMode();
+setInterval(applyViewMode, 60000);
 </script>
 </body>
 </html>
