@@ -109,88 +109,177 @@ def normalize_columns(df):
     return df
 
 
+FINVIZ_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+
+def finviz_direct(filters, label):
+    """Read Finviz screener pages directly. Tries table parse, then ticker links,
+    and saves finviz_debug.html if nothing can be read."""
+    import requests, time, re
+    from io import StringIO
+    base = "https://finviz.com/screener.ashx"
+    sess = requests.Session()
+    sess.headers.update(FINVIZ_HEADERS)
+    cols = ["No.", "Ticker", "Company", "Sector", "Industry", "Country",
+            "Market Cap", "P/E", "Price", "Change", "Volume"]
+    rows, seen = [], set()
+
+    def parse_page(html):
+        # Strategy 1: real HTML table with headers
+        try:
+            for t in pd.read_html(StringIO(html), keep_default_na=False):
+                if {"Ticker", "Company", "Price"} <= set(map(str, t.columns)):
+                    t = t.astype(str)
+                    return t.to_dict("records")
+        except Exception:
+            pass
+        # Strategy 2: ticker links (row cells if available, else ticker only)
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "lxml")
+        except Exception:
+            soup = None
+        out = []
+        if soup is not None:
+            links = soup.select('a.tab-link[href*="quote.ashx?t="]') or \
+                    soup.select('a[href*="quote.ashx?t="]')
+            for a in links:
+                m = re.search(r"quote\.ashx\?t=([A-Za-z0-9.\-]+)", a.get("href", ""))
+                if not m:
+                    continue
+                tk = m.group(1).upper()
+                rec = {"Ticker": tk}
+                tr = a.find_parent("tr")
+                if tr is not None:
+                    cells = [c.get_text(strip=True) for c in tr.find_all("td")]
+                    if tk in cells:
+                        i = cells.index(tk)
+                        for j, name in enumerate(cols[1:], start=0):
+                            if i + j < len(cells):
+                                rec[name] = cells[i + j]
+                out.append(rec)
+        else:
+            for tk in re.findall(r"quote\.ashx\?t=([A-Za-z0-9.\-]+)", html):
+                out.append({"Ticker": tk.upper()})
+        return out
+
+    for page in range(60):
+        url = f"{base}?v=111&f={','.join(filters)}&o=-volume&r={page*20+1}"
+        resp = sess.get(url, timeout=20)
+        if resp.status_code != 200:
+            print(f"  !! Finviz HTTP {resp.status_code} for {label} (page {page+1})")
+            break
+        recs = parse_page(resp.text)
+        new = [r for r in recs if r.get("Ticker") and r["Ticker"] not in seen]
+        if not new:
+            if page == 0:
+                try:
+                    with open("finviz_debug.html", "w", encoding="utf-8") as f:
+                        f.write(resp.text)
+                except Exception:
+                    pass
+                low = resp.text.lower()
+                print(f"  !! Could not find any tickers in Finviz page for {label}. "
+                      f"html_len={len(resp.text)} | 'total'={'total' in low} | "
+                      f"login={'login' in low} | captcha={'captcha' in low or 'robot' in low}")
+                print("  !! Saved finviz_debug.html in the app folder - send that file to Claude")
+            break
+        seen.update(r["Ticker"] for r in new)
+        rows.extend(new)
+        if len(new) < 20:
+            break
+        time.sleep(0.4)
+    return pd.DataFrame(rows).astype(str) if rows else pd.DataFrame()
+
+
 def fetch_screener(filters, label):
     if not HAS_FINVIZ:
         return pd.DataFrame()
     try:
         print(f"  Fetching {label} from Finviz...")
-        screen_ov = Screener(filters=filters, table="Overview", order="-volume")
-        data_ov   = list(screen_ov)
-        if not data_ov:
+        raw_df = finviz_direct(filters, label)
+        if raw_df.empty:
+            print(f"  Direct scrape empty for {label}; trying finviz library...")
+            try:
+                data_ov = list(Screener(filters=filters, table="Overview", order="-volume"))
+                raw_df = pd.DataFrame(data_ov) if data_ov else pd.DataFrame()
+            except Exception as e:
+                print(f"  Library also failed: {e}")
+        if raw_df.empty:
             print(f"  → {label}: no results")
             return pd.DataFrame()
+        print(f"  Raw columns: {list(raw_df.columns)} | first row: {raw_df.iloc[0].to_dict()}")
 
-        raw_df = pd.DataFrame(data_ov)
+        import re
+        tick_re = re.compile(r'^[A-Z]{1,5}(\.[A-Z])?$')
 
-        # Finviz 2.0.0 bug: values are shifted right by 1 position regardless
-        # of whether Price appears numeric. Always remap columns.
-        if "No." in raw_df.columns and not raw_df.empty:
-            # Check if Ticker column has suspiciously short values (1-2 chars)
-            # while Company column has longer values that look like tickers
-            avg_ticker_len = raw_df["Ticker"].astype(str).str.len().mean()
-            avg_company_len = raw_df["Company"].astype(str).str.len().mean()
-            if avg_ticker_len < 2.5 and avg_company_len <= 5:
-                # Values are shifted — Company col has the real tickers
-                raw_df = raw_df.rename(columns={
-                    "Ticker":     "_drop",
-                    "Company":    "Ticker",
-                    "Sector":     "Company",
-                    "Industry":   "Sector",
-                    "Country":    "Industry",
-                    "Market Cap": "Country",
-                    "P/E":        "Market Cap",
-                    "Price":      "P/E",
-                    "Change":     "Price",
-                    "Volume":     "Change",
-                })
-                raw_df["Volume"] = None
+        def tick_score(col):
+            if col not in raw_df.columns:
+                return 0.0
+            return raw_df[col].astype(str).apply(lambda v: bool(tick_re.match(v))).mean()
+
+        # Finviz 2.0.0 sometimes shifts values one column right.
+        # Detect by which column actually holds ticker-looking values.
+        if tick_score("Company") > tick_score("Ticker"):
+            print("  Detected shifted Finviz columns - remapping")
+            raw_df = raw_df.rename(columns={
+                "Ticker": "_drop", "Company": "Ticker", "Sector": "Company",
+                "Industry": "Sector", "Country": "Industry", "Market Cap": "Country",
+                "P/E": "Market Cap", "Price": "P/E", "Change": "Price", "Volume": "Change",
+            })
+            raw_df["Volume"] = None
 
         df_ov = normalize_columns(raw_df.drop(columns=["No.", "_drop"], errors="ignore"))
-        df_ov = df_ov[df_ov["Ticker"].astype(str).str.match(r'^[A-Z]{1,5}(\.[A-Z])?$')].copy()
+        df_ov = df_ov[df_ov["Ticker"].astype(str).apply(lambda v: bool(tick_re.match(v)))].copy()
         print(f"  → {label}: {len(df_ov)} tickers")
+        if df_ov.empty:
+            print("  !! Finviz returned rows but none had valid tickers - column layout may have changed")
+            return df_ov
 
-        # Calculate Rel Volume and actual Volume via yfinance in parallel
         print(f"  Calculating rel volume for {len(df_ov)} tickers...")
 
         def get_vol_data(ticker):
             try:
                 hist = yf.Ticker(ticker).history(period="1mo", interval="1d")
                 if hist.empty or len(hist) < 5:
-                    return None, None
+                    return None, None, None
                 avg_vol = float(hist["Volume"].iloc[:-1].mean())
                 cur_vol = float(hist["Volume"].iloc[-1])
                 relvol  = round(cur_vol / avg_vol, 1) if avg_vol > 0 else None
-                return relvol, int(cur_vol)
-            except:
-                return None, None
+                last = float(hist["Close"].iloc[-1]); prev = float(hist["Close"].iloc[-2])
+                price_chg = (round(last, 2), f"{(last/prev-1)*100:+.2f}%")
+                return relvol, int(cur_vol), price_chg
+            except Exception:
+                return None, None, None
 
         import concurrent.futures
         tickers = df_ov["Ticker"].tolist()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
             vol_results = list(ex.map(get_vol_data, tickers))
 
-        rvols   = [r[0] for r in vol_results]
-        volumes = [r[1] for r in vol_results]
-        df_ov["Rel Volume"] = rvols
-        df_ov["yf_volume"]  = volumes
+        df_ov["Rel Volume"] = [r[0] for r in vol_results]
+        df_ov["yf_volume"]  = [r[1] for r in vol_results]
+        # If Finviz gave only tickers, fill Price/Change/Company/Sector from Yahoo data
+        for col, default in (("Company", None), ("Sector", "—"), ("Industry", "—"), ("Country", "—"), ("Market Cap", "—"), ("P/E", "—")):
+            if col not in df_ov.columns:
+                df_ov[col] = df_ov["Ticker"] if default is None else default
+        if "Price" not in df_ov.columns or df_ov["Price"].isna().all():
+            df_ov["Price"]  = [str(r[2][0]) if r[2] else "0" for r in vol_results]
+        if "Change" not in df_ov.columns or df_ov["Change"].isna().all():
+            df_ov["Change"] = [r[2][1] if r[2] else "0%" for r in vol_results]
+        n_ok = sum(1 for r in vol_results if r[1] is not None)
+        print(f"  → {n_ok}/{len(df_ov)} volume lookups succeeded")
 
-        # Apply 1M volume gate using yfinance volume
+        # Volume gate: only drop tickers KNOWN to be under the minimum.
+        # If Yahoo failed/rate-limited for a ticker, keep it (Finviz already
+        # filtered on current volume) instead of wiping out the whole list.
         before = len(df_ov)
-        df_ov = df_ov[df_ov["yf_volume"].apply(lambda v: v is not None and v >= MIN_VOLUME)].copy()
+        df_ov = df_ov[df_ov["yf_volume"].apply(lambda v: v is None or pd.isna(v) or v >= MIN_VOLUME)].copy()
         print(f"  → {before} → {len(df_ov)} after {MIN_VOLUME:,} volume gate")
-        print(f"  → {sum(1 for r in rvols if r)} rel vol values calculated")
-
-        # Use yfinance volume as display volume
-        df_ov["Volume"] = df_ov["yf_volume"]
-        return df_ov
-
-        # Apply 1M volume gate using yfinance volume
-        before = len(df_ov)
-        df_ov = df_ov[df_ov["yf_volume"].apply(lambda v: v is not None and v >= MIN_VOLUME)].copy()
-        print(f"  → {before} tickers → {len(df_ov)} after {MIN_VOLUME:,} volume gate")
-        print(f"  → {sum(1 for r in rvols if r)} rel vol values calculated")
-
-        # Use yfinance volume as the display volume
         df_ov["Volume"] = df_ov["yf_volume"]
         return df_ov
 
@@ -865,7 +954,7 @@ def build_day_card_tv(row, session, tv=None):
             "entry_low": entry_low if not resistance else None,
             "entry_high": entry_high if not resistance else None,
             "entry_ref": entry_ref,
-            "stop": stop if not resistance else None,
+            "stop": stop,
             "stop_ref": stop_ref,
             "resistance": resistance, "resistance_ref": resistance_ref,
             "breakout_level": resistance,
@@ -928,6 +1017,25 @@ def build_swing_card_tv(row, tv=None, tv_daily=None):
     if (tech["current_price"] or 0) < 5:
         return None  # minimum price $5 for swings
 
+    # Extension check — how far is price from SMA20?
+    sma20_val = sma20 or tech["sma20"] or 0
+    rsi_val   = tv_daily.get("rsi") if tv_daily else None
+
+    if sma20_val and price:
+        pct_above_sma20 = ((price - sma20_val) / sma20_val) * 100
+    else:
+        pct_above_sma20 = 0
+
+    # Determine extension status
+    if (pct_above_sma20 > 15 and rsi_val and rsi_val > 70) or pct_above_sma20 > 20:
+        extension = "extended"      # 🔴 avoid
+    elif pct_above_sma20 > 10 or (rsi_val and rsi_val > 65):
+        extension = "caution"       # 🟡 slightly extended
+    else:
+        extension = "healthy"       # 🟢 good entry zone
+
+    extension_detail = f"{pct_above_sma20:+.1f}% vs SMA20" + (f" | RSI {rsi_val:.0f}" if rsi_val else "")
+
     support_val   = tech["support_val"] or price * 0.95
     support_label = tech["support_label"] or "SMA50"
     entry = round(support_val * 1.005, 2)
@@ -947,6 +1055,8 @@ def build_swing_card_tv(row, tv=None, tv_daily=None):
         "volume": volume, "pos": pos,
         "ema_ok": bool(ema_ok),
         "sma200_rising": bool(sma200_rising),
+        "extension": extension,
+        "extension_detail": extension_detail,
         "data_source": data_source,
         "news": news,
         "levels": {
