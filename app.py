@@ -128,6 +128,36 @@ def finviz_direct(filters, label):
             "Market Cap", "P/E", "Price", "Change", "Volume"]
     rows, seen = [], set()
 
+    colmap = {"row": "No.", "ticker": "Ticker", "company": "Company", "sector": "Sector",
+              "industry": "Industry", "country": "Country", "marketCap": "Market Cap",
+              "PE": "P/E", "price": "Price", "change": "Change", "volume": "Volume"}
+
+    def parse_grid(html):
+        """Finviz's 2025+ div-grid layout. Returns (records, total_count)."""
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "lxml")
+        except Exception:
+            return [], None
+        total = None
+        tc = soup.select_one(".fv-table_toolbar-count")
+        if tc:
+            m = re.search(r"/\s*([\d,]+)\s*Total", tc.get_text())
+            if m:
+                total = int(m.group(1).replace(",", ""))
+        recs = []
+        for r in soup.select("div.fv-table_row"):
+            tk = (r.get("data-row-key") or "").strip().upper()
+            if not tk:
+                continue
+            rec = {"Ticker": tk}
+            for c in r.select("[data-column-id]"):
+                name = colmap.get(c.get("data-column-id"))
+                if name and name != "Ticker":
+                    rec[name] = c.get_text(strip=True)
+            recs.append(rec)
+        return recs, total
+
     def parse_page(html):
         # Strategy 1: real HTML table with headers
         try:
@@ -167,13 +197,21 @@ def finviz_direct(filters, label):
                 out.append({"Ticker": tk.upper()})
         return out
 
-    for page in range(60):
-        url = f"{base}?v=111&f={','.join(filters)}&o=-volume&r={page*20+1}"
+    next_start, total = 1, None
+    for page in range(80):
+        url = f"{base}?v=111&f={','.join(filters)}&o=-volume&r={next_start}"
         resp = sess.get(url, timeout=20)
         if resp.status_code != 200:
             print(f"  !! Finviz HTTP {resp.status_code} for {label} (page {page+1})")
             break
-        recs = parse_page(resp.text)
+        recs, pg_total = parse_grid(resp.text)
+        if pg_total is not None:
+            total = pg_total
+        if not recs:
+            if total == 0 or (page == 0 and pg_total == 0):
+                print(f"  → {label}: Finviz says 0 matches right now")
+                break
+            recs = parse_page(resp.text)
         new = [r for r in recs if r.get("Ticker") and r["Ticker"] not in seen]
         if not new:
             if page == 0:
@@ -182,15 +220,14 @@ def finviz_direct(filters, label):
                         f.write(resp.text)
                 except Exception:
                     pass
-                low = resp.text.lower()
-                print(f"  !! Could not find any tickers in Finviz page for {label}. "
-                      f"html_len={len(resp.text)} | 'total'={'total' in low} | "
-                      f"login={'login' in low} | captcha={'captcha' in low or 'robot' in low}")
-                print("  !! Saved finviz_debug.html in the app folder - send that file to Claude")
+                print(f"  !! Could not read tickers from Finviz page for {label} (total={total}). Saved finviz_debug.html")
             break
         seen.update(r["Ticker"] for r in new)
         rows.extend(new)
-        if len(new) < 20:
+        # advance by absolute row index when available (robust to virtualised grids)
+        idxs = [int(str(r.get("No.", "")).replace(",", "")) for r in new if str(r.get("No.", "")).replace(",", "").isdigit()]
+        next_start = (max(idxs) + 1) if idxs else (next_start + len(new))
+        if total is not None and next_start > total:
             break
         time.sleep(0.4)
     return pd.DataFrame(rows).astype(str) if rows else pd.DataFrame()
@@ -1094,7 +1131,8 @@ def cached_fetch(filters, label):
         print(f"  → {label}: using cached results ({len(_cache[key]['df'])} tickers)")
         return _cache[key]["df"]
     df = fetch_screener(filters, label)
-    _cache[key] = {"df": df, "ts": now}
+    if df is not None and not df.empty:
+        _cache[key] = {"df": df, "ts": now}
     return df
 
 
