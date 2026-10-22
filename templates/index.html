@@ -86,7 +86,32 @@
   /* TICKER CARD */
   .card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; overflow: hidden; transition: border-color 0.15s; }
   .card:hover { border-color: var(--border2); }
-  .card-header { display: flex; align-items: center; justify-content: space-between; padding: 11px 14px; cursor: pointer; gap: 10px; }
+  .card-header { display: block; padding: 10px 14px; cursor: pointer; position: relative; }
+  /* Row 1: identity + numbers, fixed columns so values line up down the list */
+  .hdr-row1 { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .hdr-row1 .sym { width: 70px; min-width: 70px; flex: 0 0 70px; }
+  .hdr-row1 .co  { flex: 1 1 auto; min-width: 0; max-width: none; }
+  .hdr-row1 .ind { flex: 0 0 150px; width: 150px; overflow: hidden; text-overflow: ellipsis; }
+  .hdr-nums { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+  .n-price { width: 78px; text-align: right; }
+  .n-chg   { width: 72px; text-align: right; }
+  .n-rv    { width: 52px; text-align: right; }
+  .n-vol   { width: 58px; text-align: right; }
+  /* Row 2: signal badges in fixed slots (empty slots keep their space) */
+  .hdr-row2 { display: grid; align-items: center; gap: 8px; margin-top: 7px; padding-left: 28px; }
+  .hdr-row2.kind-day     { grid-template-columns: 118px 150px 140px 150px 96px minmax(0,1fr) auto auto; }
+  .hdr-row2.kind-squeeze { grid-template-columns: 118px 150px 140px 150px 96px 84px minmax(0,1fr) auto auto; }
+  .hdr-row2.kind-swing   { grid-template-columns: 118px 112px 150px 140px minmax(0,1fr) auto auto; }
+  .slot { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
+  .slot .badge, .slot .score-badge { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .slot-news, .slot-charts { justify-content: flex-end; overflow: visible; }
+  .slot-warn { gap: 6px; flex-wrap: nowrap; overflow: visible; }
+  @media (max-width: 1000px) {
+    .hdr-row2, .hdr-row2.kind-day, .hdr-row2.kind-squeeze, .hdr-row2.kind-swing { display: flex; flex-wrap: wrap; padding-left: 0; gap: 6px; }
+    .slot { overflow: visible; }
+    .slot:empty { display: none; }
+    .slot-news, .slot-charts { justify-content: flex-start; }
+  }
   .card-header:hover { background: var(--bg3); }
   .card-left  { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
   .card-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
@@ -335,7 +360,13 @@
     .sort-btn { flex-shrink: 0; padding: 5px 10px; font-size: 10px; }
 
     /* Card header stacks on mobile */
-    .card-header { flex-direction: column; align-items: flex-start; gap: 6px; padding: 10px 12px; }
+    .card-header { padding: 10px 12px; }
+    .hdr-row1 { flex-wrap: wrap; gap: 6px; padding-right: 26px; }
+    .hdr-nums { padding-right: 0 !important; }
+    .hdr-row1 .co { flex: 1 1 120px; }
+    .hdr-row1 .ind { display: none; }
+    .hdr-nums { width: 100%; justify-content: space-between; gap: 6px; padding-right: 22px; }
+    .n-price, .n-chg, .n-rv, .n-vol { width: auto; text-align: left; }
     .card-left  { gap: 6px; }
     .card-right { width: 100%; justify-content: space-between; }
     .sym  { font-size: 16px; min-width: auto; }
@@ -345,7 +376,6 @@
     .stat { font-size: 11px; }
 
     /* Chevron moves to top right on mobile */
-    .card-header { position: relative; }
     .chevron { position: absolute; top: 12px; right: 12px; }
 
     /* Grids go 2-column on mobile */
@@ -846,6 +876,45 @@ function extensionBadgeHTML(d) {
   return `<span class="badge ${m[0]}" title="${d.extension_detail||''}">${m[1]}</span>`;
 }
 
+function warnBadgesHTML(d) {
+  const out = [];
+  if (d.ema_ok === false) out.push('<span class="badge b-red" title="EMA5 is below EMA9">EMA5&lt;9</span>');
+  if (d.data_source && d.data_source !== 'TradingView (live)')
+    out.push('<span class="badge" style="background:var(--bg3);color:var(--text3);border:1px solid var(--border)" title="Delayed yfinance data">⏱ Delayed</span>');
+  return out.join('');
+}
+
+function cardHeaderHTML(d, id, kind, score, newsBadge, chartBtns) {
+  const chgCls = d.pos ? 'chg-pos' : 'chg-neg';
+  const slots = kind === 'swing'
+    ? [['score', scoreBadgeHTML(score)], ['status', extensionBadgeHTML(d)], ['earn', earningsBadgeHTML(d)],
+       ['catalyst', catalystBadgeHTML(d)], ['warn', warnBadgesHTML(d)], ['news', newsBadge], ['charts', chartBtns]]
+    : [['score', scoreBadgeHTML(score)], ['status', statusBadgeHTML(d.status)], ['catalyst', catalystBadgeHTML(d)],
+       ['earn', earningsBadgeHTML(d)], ['float', floatBadgeHTML(d)]]
+      .concat(kind === 'squeeze' ? [['squeeze', '<span class="badge b-amber">⚡ SQUEEZE</span>']] : [])
+      .concat([['warn', warnBadgesHTML(d)], ['news', newsBadge], ['charts', chartBtns]]);
+  return `
+    <div class="card-header" onclick="toggle('${id}')">
+      <div class="hdr-row1">
+        <input type="checkbox" class="card-checkbox" ${favorites.has(d.ticker) ? 'checked' : ''}
+          onclick="event.stopPropagation();toggleFavorite('${d.ticker}',this)" title="Add to favorites">
+        <span class="sym">${d.ticker}</span>
+        <span class="co" title="${esc(d.company)}">${esc(d.company)}</span>
+        <span class="ind" title="${esc(d.industry || d.sector || '')}">${esc(d.industry || d.sector || '')}</span>
+        <div class="hdr-nums">
+          <span class="price-val n-price">$${parseFloat(d.price).toFixed(2)}</span>
+          <span class="${chgCls} n-chg">${d.change}</span>
+          <span class="stat n-rv">${fmtRelVol(d.relvol)}</span>
+          <span class="stat n-vol">${fmtVol(d.volume)}</span>
+          <svg class="chevron" id="chev-${id}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+      </div>
+      <div class="hdr-row2 kind-${kind}">
+        ${slots.map(([c, html]) => `<span class="slot slot-${c}">${html || ''}</span>`).join('')}
+      </div>
+    </div>`;
+}
+
 function earningsBadgeHTML(d) {
   const e = d.earnings;
   if (!e || !e.label) return '';
@@ -857,8 +926,8 @@ function catalystBadgeHTML(d) {
   const c = d.catalyst;
   if (!c || !c.flag) return '';
   if (c.flag === 'bearish')
-    return `<span class="badge b-red" title="Fresh bearish headline(s) in the last 72h: ${c.bearish.join(', ')}">🚩 ${c.bearish.slice(0,2).join(' / ')}</span>`;
-  return `<span class="badge b-green" title="Fresh bullish headline(s) in the last 72h: ${c.bullish.join(', ')}">✅ ${c.bullish.slice(0,2).join(' / ')}</span>`;
+    return `<span class="badge b-red" title="Fresh bearish headline(s) in the last 72h: ${c.bearish.join(', ')}">🚩 ${c.bearish[0]}${c.bearish.length > 1 ? ' +' + (c.bearish.length - 1) : ''}</span>`;
+  return `<span class="badge b-green" title="Fresh bullish headline(s) in the last 72h: ${c.bullish.join(', ')}">✅ ${c.bullish[0]}${c.bullish.length > 1 ? ' +' + (c.bullish.length - 1) : ''}</span>`;
 }
 
 function floatBadgeHTML(d) {
@@ -1195,26 +1264,7 @@ function dayCardHTML(d, idx, prefix) {
 
   return `
   <div class="card ${favorites.has(d.ticker) ? 'favorited' : ''}" id="card-${id}">
-    <div class="card-header" onclick="toggle('${id}')">
-      <div class="card-left">
-        <input type="checkbox" class="card-checkbox" ${favorites.has(d.ticker) ? 'checked' : ''}
-          onclick="event.stopPropagation();toggleFavorite('${d.ticker}',this)"
-          title="Add to favorites">
-        <span class="sym">${d.ticker}</span>
-        <span class="co">${d.company}</span>
-        <span class="ind">${d.industry || d.sector || ''}</span>
-        ${scoreBadgeHTML(score)}
-        ${d.data_source === 'TradingView (live)' ? '<span class="badge b-green" title="Live TradingView data">📡 Live</span>' : '<span class="badge" style="background:var(--bg3);color:var(--text3);border:1px solid var(--border)" title="Delayed yfinance data">⏱ Delayed</span>'}
-        ${sqBadge}${statusBadgeHTML(d.status)}${floatBadgeHTML(d)}${earningsBadgeHTML(d)}${catalystBadgeHTML(d)}${emaBadge}${newsBadge}${dayChartBtns(d.ticker)}
-      </div>
-      <div class="card-right">
-        <span class="price-val">$${parseFloat(d.price).toFixed(2)}</span>
-        <span class="${chgCls}">${d.change}</span>
-        <span class="stat">${fmtRelVol(d.relvol)}</span>
-        <span class="stat">${fmtVol(d.volume)}</span>
-        <svg class="chevron" id="chev-${id}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-      </div>
-    </div>
+    ${cardHeaderHTML(d, id, d.squeeze ? 'squeeze' : 'day', score, newsBadge, dayChartBtns(d.ticker))}
     <div class="card-body" id="body-${id}">
       <div class="news-panel" id="news-${id}" style="display:none">
         <div class="news-panel-title">Recent news — ${d.ticker}</div>
@@ -1284,27 +1334,7 @@ function swingCardHTML(d, idx) {
 
   return `
   <div class="card ${favorites.has(d.ticker) ? 'favorited' : ''}" id="card-${id}">
-    <div class="card-header" onclick="toggle('${id}')">
-      <div class="card-left">
-        <input type="checkbox" class="card-checkbox" ${favorites.has(d.ticker) ? 'checked' : ''}
-          onclick="event.stopPropagation();toggleFavorite('${d.ticker}',this)"
-          title="Add to favorites">
-        <span class="sym">${d.ticker}</span>
-        <span class="co">${d.company}</span>
-        <span class="ind">${d.industry || d.sector || ''}</span>
-        ${scoreBadgeHTML(score)}
-        ${d.data_source === 'TradingView (live)' ? '<span class="badge b-green" title="Live TradingView data">📡 Live</span>' : '<span class="badge" style="background:var(--bg3);color:var(--text3);border:1px solid var(--border)" title="Delayed yfinance data">⏱ Delayed</span>'}
-        <span class="badge b-blue">200MA Rising ↑</span>
-        ${extensionBadgeHTML(d)}${earningsBadgeHTML(d)}${catalystBadgeHTML(d)}${emaBadge}${newsBadge}${swingChartBtns(d.ticker)}
-      </div>
-      <div class="card-right">
-        <span class="price-val">$${parseFloat(d.price).toFixed(2)}</span>
-        <span class="${chgCls}">${d.change}</span>
-        <span class="stat">${fmtRelVol(d.relvol)}</span>
-        <span class="stat">${fmtVol(d.volume)}</span>
-        <svg class="chevron" id="chev-${id}" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
-      </div>
-    </div>
+    ${cardHeaderHTML(d, id, 'swing', score, newsBadge, swingChartBtns(d.ticker))}
     <div class="card-body" id="body-${id}">
       <div class="news-panel" id="news-${id}" style="display:none">
         <div class="news-panel-title">Recent news — ${d.ticker}</div>
