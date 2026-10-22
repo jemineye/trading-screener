@@ -121,6 +121,18 @@
   .b-green  { background: var(--green-bg);  color: var(--green);  border: 1px solid rgba(61,220,132,0.18); }
   .b-red    { background: var(--red-bg);    color: var(--red);    border: 1px solid rgba(255,107,107,0.18); }
   .b-amber  { background: var(--amber-bg);  color: var(--amber);  border: 1px solid rgba(255,179,71,0.18); }
+  .live-read { border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; border: 1px solid var(--border); background: var(--bg3); }
+  .live-read.tone-green { border-color: rgba(61,220,132,0.35); background: var(--green-bg); }
+  .live-read.tone-red   { border-color: rgba(255,107,107,0.35); background: var(--red-bg); }
+  .live-read.tone-amber { border-color: rgba(255,179,71,0.35); background: var(--amber-bg); }
+  .live-read.tone-blue  { border-color: rgba(77,166,255,0.35); background: var(--blue-bg); }
+  .live-read-title { font-size: 13px; font-weight: 700; }
+  .live-read-detail { font-size: 12px; color: var(--text2); margin-top: 3px; line-height: 1.4; }
+  .flip-row { display:flex; justify-content:space-between; gap:10px; font-size:12px; padding:3px 0; border-bottom:1px solid var(--border); }
+  .flip-row:last-child { border-bottom:none; }
+  .rev-table { width:100%; border-collapse:collapse; font-size:12px; margin-top:10px; }
+  .rev-table th, .rev-table td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  .rev-wrap { overflow-x:auto; }
   .b-blue   { background: var(--blue-bg);   color: var(--blue);   border: 1px solid rgba(77,166,255,0.18); }
   .b-purple { background: var(--purple-bg); color: var(--purple); border: 1px solid rgba(179,157,219,0.18); }
 
@@ -403,6 +415,7 @@
         <button class="tab-run-btn" id="run-swing-btn" onclick="runTab('swing')" title="Run Swings screener">▶</button>
       </div>
       <button class="tab-btn" onclick="showTab('watchlist')" id="tab-watchlist-btn">🔍 Manual Search <span class="tab-count" id="cnt-wl">0</span></button>
+      <button class="tab-btn" onclick="showTab('review')" id="tab-review-btn">📊 Review</button>
     </div>
     <div class="filter-row">
       <span class="filter-label">Sector</span>
@@ -436,6 +449,17 @@
   <div id="pane-day">    <div class="empty"><strong>Ready to scan</strong>Hit "Run Screener" to fetch live candidates.</div></div>
   <div id="pane-squeeze" style="display:none"><div class="empty"><strong>Ready to scan</strong>Hit "Run Screener" to fetch live candidates.</div></div>
   <div id="pane-swing"   style="display:none"><div class="empty"><strong>Ready to scan</strong>Hit "Run Screener" to fetch live candidates.</div></div>
+  <div id="pane-review" style="display:none">
+    <div class="wl-input-area">
+      <div class="ms-section-title" style="margin-bottom:6px">Did the levels work?</div>
+      <div class="wl-subtitle">Every Day Trade / Squeeze run is logged on your PC. Pick a day and see what price did afterward vs. the logged status, entry zone and targets.</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+        <select class="sector-select" id="review-date"><option value="">Loading dates…</option></select>
+        <button class="fav-btn" onclick="runReview()">Review this day</button>
+      </div>
+      <div id="review-out" style="margin-top:10px"></div>
+    </div>
+  </div>
   <div id="pane-watchlist" style="display:none">
 
     <!-- DAY TRADE SECTION -->
@@ -675,14 +699,45 @@ setInterval(updateClock, 1000); updateClock();
 // ── Tabs ───────────────────────────────────────────────────
 function showTab(tab) {
   activeTab = tab;
-  ['day','squeeze','swing','watchlist'].forEach(t => {
+  ['day','squeeze','swing','watchlist','review'].forEach(t => {
     document.getElementById('pane-' + t).style.display = t === tab ? '' : 'none';
     document.getElementById('tab-' + t + '-btn').className = 'tab-btn' + (t === tab ? ' active' : '');
   });
+  if (tab === 'review') loadReviewDates();
   // Reset fav filter when switching tabs so each tab is independent
   favFilterOn = false;
   updateFavBar();
   updateResultCount();
+}
+
+// ── Review tab ─────────────────────────────────────────────
+async function loadReviewDates() {
+  const sel = document.getElementById('review-date');
+  try {
+    const r = await (await fetch('/api/snapshots/dates')).json();
+    sel.innerHTML = r.dates.length
+      ? r.dates.map(x => `<option value="${x}">${x}</option>`).join('')
+      : '<option value="">No snapshots logged yet — run Day Trades first</option>';
+  } catch (e) { sel.innerHTML = '<option value="">Could not load</option>'; }
+}
+
+async function runReview() {
+  const date = document.getElementById('review-date').value;
+  const out  = document.getElementById('review-out');
+  if (!date) { out.innerHTML = 'Pick a date first.'; return; }
+  out.innerHTML = 'Checking what price did after each snapshot… (can take a minute)';
+  try {
+    const r = await (await fetch('/api/snapshots/review?date=' + encodeURIComponent(date))).json();
+    const names = {below_vwap:'🔻 Below VWAP', below_res:'⏳ Below resistance', testing:'👀 Testing resistance', retest_hold:'✅ Retest holding', in_zone:'🎯 In entry zone', above_zone:'↗ Above zone', extended:'🚀 Extended', below_zone:'🔻 Below zone'};
+    const sum = (r.summary||[]).map(g => `<tr><td>${names[g.status]||g.status}</td><td>${g.n}</td><td>${g.t1_rate}%</td><td>${g.t2_rate}%</td><td class="v-green">+${g.avg_mfe}%</td><td class="v-red">${g.avg_mae}%</td></tr>`).join('');
+    const rows = (r.rows||[]).map(x => x.mfe_pct == null
+      ? `<tr><td>${x.ticker}</td><td colspan="8">${x.outcome||''}</td></tr>`
+      : `<tr><td><b>${x.ticker}</b></td><td>${names[x.status]||x.status}</td><td>${fmt(x.price)}</td><td>${x.hit_t1?'✅':'—'}</td><td>${x.hit_t2?'✅':'—'}</td><td class="v-green">+${x.mfe_pct}%</td><td class="v-red">${x.mae_pct}%</td><td>${x.resistance ? (x.cleared_resistance?'broke ✅':'held ⛔') : ''}</td><td>${x.lost_vwap_support?'lost VWAP':''}</td></tr>`).join('');
+    out.innerHTML = `
+      <div class="rev-wrap"><table class="rev-table"><thead><tr><th>Status at snapshot</th><th>#</th><th>Hit T1</th><th>Hit T2</th><th>Avg best move</th><th>Avg worst move</th></tr></thead><tbody>${sum||'<tr><td colspan="6">No completed outcomes yet — later data may not exist yet.</td></tr>'}</tbody></table></div>
+      <div class="rev-wrap"><table class="rev-table"><thead><tr><th>Ticker</th><th>Status</th><th>Price</th><th>T1</th><th>T2</th><th>Best</th><th>Worst</th><th>Resistance</th><th>VWAP</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="wl-subtitle" style="margin-top:8px">Best/Worst = how far price went up/down from the snapshot price in the following session (1-minute data, last 7 days only). It's a sample, not proof — look at patterns over many days.</div>`;
+  } catch (e) { out.innerHTML = 'Review failed: ' + e; }
 }
 
 // ── Sector filter ──────────────────────────────────────────
@@ -779,6 +834,41 @@ function fmtRelVol(v) {
 }
 
 // ── Setup Scoring ──────────────────────────────────────────
+function statusBadgeHTML(st) {
+  if (!st) return '';
+  const cls = {green:'b-green', red:'b-red', amber:'b-amber', blue:'b-blue'}[st.tone] || '';
+  return `<span class="badge ${cls}" title="${(st.detail||'').replace(/"/g,'&quot;')}">${st.label}</span>`;
+}
+
+function extensionBadgeHTML(d) {
+  if (!d.extension) return '';
+  const m = {healthy:['b-green','✓ Healthy'], caution:['b-amber','⚠ Stretching'], extended:['b-red','🔥 Extended']}[d.extension] || ['','' ];
+  return `<span class="badge ${m[0]}" title="${d.extension_detail||''}">${m[1]}</span>`;
+}
+
+function liveReadHTML(d) {
+  const st = d.status; if (!st) return '';
+  const r = d.range || {};
+  const vcls = {plenty:'b-green', limited:'b-amber', tight:'b-red', open:'b-blue'}[r.verdict] || '';
+  const vlbl = {plenty:'Plenty of room', limited:'Limited room', tight:'Tight — little room left', open:'Open air above'}[r.verdict] || '';
+  const sup = d.supports || [];
+  const supRows = sup.map(s => `
+    <div class="flip-row"><span>${s.flipped ? '🔁 ' : ''}${s.kind}</span>
+      <span><b>${fmt(s.level)}</b> <span style="color:var(--text3)">(${s.dist_pct}% below${s.held_min!=null ? ' · held '+s.held_min+'m' : ''}${s.retested ? ' · retested ✓' : ''})</span></span></div>`).join('');
+  const vsrc = d.levels?.vwap_src ? ` · VWAP: ${d.levels.vwap_src}` : '';
+  return `
+    <div class="live-read tone-${st.tone}">
+      <div class="live-read-title">${st.label}</div>
+      <div class="live-read-detail">${st.detail}${vsrc}</div>
+    </div>
+    <div class="plan-block">
+      <div class="plan-title">Range remaining ${vlbl ? `<span class="badge ${vcls}" style="margin-left:6px">${vlbl}</span>` : ''}</div>
+      ${r.note ? `<div class="plan-row"><span class="plan-key">Room vs ATR</span><span class="plan-val v-plain">${r.note}</span></div>` : ''}
+      ${r.atr ? `<div class="plan-row"><span class="plan-key">ATR (14d)</span><span class="plan-val v-amber">${fmt(r.atr)}</span></div>` : ''}
+    </div>
+    ${sup.length ? `<div class="plan-block"><div class="plan-title">Support &amp; flip levels below price</div>${supRows}</div>` : ''}`;
+}
+
 function scoreDayTrade(d) {
   const rows = [];
   let score = 0;
@@ -800,8 +890,8 @@ function scoreDayTrade(d) {
     rows.push({label: `Rel Vol ${rv}x (need ≥2x)`, val: '0', hit: false});
   }
 
-  // R:R on T2
-  const rr2 = parseFloat(d.plan?.rr2) || 0;
+  // R:R on T2 (falls back to T1 when only one target exists)
+  const rr2 = parseFloat(d.plan?.rr2 ?? d.plan?.rr1) || 0;
   if (rr2 >= 3) {
     score += 2; rows.push({label: `R:R ${rr2}:1 (≥3:1)`, val: '+2', hit: true});
   } else if (rr2 >= 2) {
@@ -833,7 +923,26 @@ function scoreDayTrade(d) {
     rows.push({label: `Volume ${fmtVol(vol)} (need ≥5M)`, val: '0', hit: false});
   }
 
-  return {score: Math.min(score, 10), rows};
+  // ── Live read (only when the backend supplied it) ──
+  if (d.status) {
+    const c = d.status.code;
+    if (c === 'below_vwap') {
+      score -= 2; rows.push({label: 'Below VWAP (demand lost)', val: '-2', hit: false});
+    } else if (c === 'retest_hold' || c === 'in_zone') {
+      score += 1; rows.push({label: d.status.label.replace(/^\S+\s/, ''), val: '+1', hit: true});
+    } else if (c === 'extended') {
+      score -= 1; rows.push({label: 'Extended above entry zone', val: '-1', hit: false});
+    }
+  }
+  if (d.range && d.range.verdict) {
+    if (d.range.verdict === 'plenty' || d.range.verdict === 'open') {
+      score += 1; rows.push({label: 'Room left vs ATR', val: '+1', hit: true});
+    } else if (d.range.verdict === 'tight') {
+      score -= 1; rows.push({label: 'Little range left vs ATR', val: '-1', hit: false});
+    }
+  }
+
+  return {score: Math.max(0, Math.min(score, 10)), raw: score, rows};
 }
 
 function scoreSwing(d) {
@@ -887,7 +996,16 @@ function scoreSwing(d) {
     rows.push({label: `Rel Vol ${rv}x (need ≥1.5x)`, val: '0', hit: false});
   }
 
-  return {score: Math.min(score, 10), rows};
+  // Over/under-extended (distance above SMA20 + RSI)
+  if (d.extension === 'healthy') {
+    score += 1; rows.push({label: 'Not extended (' + (d.extension_detail||'') + ')', val: '+1', hit: true});
+  } else if (d.extension === 'extended') {
+    score -= 2; rows.push({label: 'Over-extended (' + (d.extension_detail||'') + ')', val: '-2', hit: false});
+  } else if (d.extension === 'caution') {
+    score -= 1; rows.push({label: 'Stretching (' + (d.extension_detail||'') + ')', val: '-1', hit: false});
+  }
+
+  return {score: Math.max(0, Math.min(score, 10)), raw: score, rows};
 }
 
 function scoreBadgeHTML(score) {
@@ -934,21 +1052,45 @@ function swingChartBtns(ticker) {
 }
 
 // ── News HTML ──────────────────────────────────────────────
-function newsHTML(news) {
+function esc(t) {
+  return String(t == null ? '' : t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function newsAgeLabel(h) {
+  if (h == null) return '';
+  if (h < 1) return Math.max(1, Math.round(h*60)) + 'm ago';
+  if (h < 48) return Math.round(h) + 'h ago';
+  return Math.round(h/24) + 'd ago';
+}
+
+function newsBadgeHTML(d, id) {
+  const news = d.news || [];
+  const fresh = news.filter(n => n.age_hours != null && n.age_hours < 24).length;
+  const cnt = news.length;
+  const style = fresh > 0 ? 'background:var(--amber-bg);color:var(--amber);border-color:rgba(255,179,71,0.35)' : '';
+  const label = fresh > 0 ? `🔥 ${fresh} new &lt;24h` : `${cnt} news`;
+  return `<span class="news-badge ${cnt===0?'no-news':''}" style="${style}" onclick="event.stopPropagation();toggleNews('${id}')" title="${cnt} headlines (${fresh} in the last 24h)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a4 4 0 0 1-4 4"/><path d="M10 2v4"/><path d="M8 10h8"/><path d="M8 14h8"/></svg>
+    ${label}
+  </span>`;
+}
+
+function newsHTML(news, ticker) {
+  const more = ticker ? `<div class="news-meta" style="margin-top:8px">More: <a href="https://finviz.com/quote.ashx?t=${esc(ticker)}" target="_blank" rel="noopener" style="color:var(--blue)">Finviz</a> · <a href="https://finance.yahoo.com/quote/${esc(ticker)}/news" target="_blank" rel="noopener" style="color:var(--blue)">Yahoo</a></div>` : '';
   if (!news || news.length === 0)
-    return '<div class="news-empty">No recent news found.</div>';
+    return '<div class="news-empty">No recent news found (Yahoo may have returned nothing or been rate-limited).</div>' + more;
   return news.map(n => `
     <div class="news-item">
       <div class="news-headline">
         ${n.url
-          ? `<a href="${n.url}" target="_blank" rel="noopener">${n.title}</a>`
-          : n.title}
+          ? `<a href="${esc(n.url)}" target="_blank" rel="noopener">${esc(n.title)}</a>`
+          : esc(n.title)}
       </div>
       <div class="news-meta">
-        <span>${n.source || 'Unknown'}</span>
-        ${n.time ? `<span>${n.time}</span>` : ''}
+        <span>${esc(n.source || 'Unknown')}</span>
+        ${n.time ? `<span>${esc(n.time)}${n.age_hours != null ? ' · ' + newsAgeLabel(n.age_hours) : ''}</span>` : ''}
       </div>
-    </div>`).join('');
+    </div>`).join('') + more;
 }
 
 // ── Extended hours tile ────────────────────────────────────
@@ -982,11 +1124,7 @@ function dayCardHTML(d, idx, prefix) {
     ? '<span class="badge b-green">EMA5 &gt; EMA9 ✓</span>'
     : '<span class="badge b-red">EMA5 &lt; EMA9</span>';
   const sqBadge = d.squeeze ? '<span class="badge b-amber">⚡ SQUEEZE</span>' : '';
-  const newsCnt = d.news ? d.news.length : 0;
-  const newsBadge = `<span class="news-badge ${newsCnt===0?'no-news':''}" onclick="event.stopPropagation();toggleNews('${id}')">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a4 4 0 0 1-4 4"/><path d="M10 2v4"/><path d="M8 10h8"/><path d="M8 14h8"/></svg>
-    ${newsCnt} news
-  </span>`;
+  const newsBadge = newsBadgeHTML(d, id);
   const lvl = d.levels, plan = d.plan;
   const pmBlock = lvl.pm_high != null ? `
     <div class="plan-block">
@@ -999,7 +1137,7 @@ function dayCardHTML(d, idx, prefix) {
 
   const scored  = scoreDayTrade(d);
   const score   = scored.score;
-  d._score      = score; // cache for sort
+  d._score      = scored.raw != null ? scored.raw : score; // uncapped for sort
 
   return `
   <div class="card ${favorites.has(d.ticker) ? 'favorited' : ''}" id="card-${id}">
@@ -1013,7 +1151,7 @@ function dayCardHTML(d, idx, prefix) {
         <span class="ind">${d.industry || d.sector || ''}</span>
         ${scoreBadgeHTML(score)}
         ${d.data_source === 'TradingView (live)' ? '<span class="badge b-green" title="Live TradingView data">📡 Live</span>' : '<span class="badge" style="background:var(--bg3);color:var(--text3);border:1px solid var(--border)" title="Delayed yfinance data">⏱ Delayed</span>'}
-        ${sqBadge}${emaBadge}${newsBadge}${dayChartBtns(d.ticker)}
+        ${sqBadge}${statusBadgeHTML(d.status)}${emaBadge}${newsBadge}${dayChartBtns(d.ticker)}
       </div>
       <div class="card-right">
         <span class="price-val">$${parseFloat(d.price).toFixed(2)}</span>
@@ -1026,16 +1164,19 @@ function dayCardHTML(d, idx, prefix) {
     <div class="card-body" id="body-${id}">
       <div class="news-panel" id="news-${id}" style="display:none">
         <div class="news-panel-title">Recent news — ${d.ticker}</div>
-        ${newsHTML(d.news)}
+        ${newsHTML(d.news, d.ticker)}
       </div>
       ${extHTML(d.ext)}
       <div class="card-detail">
+        ${liveReadHTML(d)}
         ${scoreBreakdownHTML(scored.rows)}
         <div class="grid-4">
           <div class="tile"><div class="tile-lbl">${lvl.label} high</div><div class="tile-val v-green">${fmt(lvl.key_high)}</div></div>
           <div class="tile"><div class="tile-lbl">${lvl.label} low</div><div class="tile-val v-red">${fmt(lvl.key_low)}</div></div>
-          <div class="tile"><div class="tile-lbl">VWAP proxy</div><div class="tile-val v-amber">${fmt(lvl.vwap)}</div></div>
+          <div class="tile"><div class="tile-lbl">${lvl.vwap_src && lvl.vwap_src.startsWith('live') ? 'VWAP (live)' : 'VWAP proxy'}</div><div class="tile-val v-amber">${fmt(lvl.vwap)}</div></div>
           <div class="tile"><div class="tile-lbl">Prev close</div><div class="tile-val v-plain">${fmt(lvl.prev_close)}</div></div>
+          ${lvl.hod != null ? `<div class="tile"><div class="tile-lbl">High of day</div><div class="tile-val v-green">${fmt(lvl.hod)}</div></div>
+          <div class="tile"><div class="tile-lbl">Low of day</div><div class="tile-val v-red">${fmt(lvl.lod)}</div></div>` : ''}
           <div class="tile"><div class="tile-lbl">6-month high</div><div class="tile-val v-green">${fmt(lvl.high_6m)}</div></div>
           <div class="tile"><div class="tile-lbl">6-month low</div><div class="tile-val v-red">${fmt(lvl.low_6m)}</div></div>
           <div class="tile"><div class="tile-lbl">20d range high</div><div class="tile-val v-plain">${fmt(lvl.high_20d)}</div></div>
@@ -1050,19 +1191,18 @@ function dayCardHTML(d, idx, prefix) {
           <div class="plan-title">Trade plan</div>
           ${plan.resistance ? `
           <div class="plan-row"><span class="plan-key">⏳ Wait for breakout</span><span class="plan-val v-amber">${fmt(plan.resistance)} ← must clear &amp; hold before entry</span></div>
-          <div class="plan-row"><span class="plan-key">Entry after breakout</span><span class="plan-val v-blue">Pullback to EMA5 / ${plan.entry_ref.includes('VWAP') ? 'VWAP' : 'PM Low'} once above ${fmt(plan.resistance)}</span></div>
+          <div class="plan-row"><span class="plan-key">Entry after breakout</span><span class="plan-val v-blue">Pullback to EMA5 / VWAP once above ${fmt(plan.resistance)}, then hold</span></div>
           ` : `
           <div class="plan-row"><span class="plan-key">Entry zone</span><span class="plan-val v-blue">${fmt(plan.entry_low)} – ${fmt(plan.entry_high)} ← ${plan.entry_ref}</span></div>
-          <div class="plan-row"><span class="plan-key">Stop</span><span class="plan-val v-red">${fmt(plan.stop)} ← ${plan.stop_ref || 'below EMA9'}</span></div>
           `}
-          <div class="plan-row"><span class="plan-key">Target 1</span><span class="plan-val v-green">${fmt(plan.t1)} &nbsp;(${rr(plan.rr1)}) ← nearest swing high</span></div>
-          <div class="plan-row"><span class="plan-key">Target 2</span><span class="plan-val v-green">${fmt(plan.t2)} &nbsp;(${rr(plan.rr2)}) ← ${lvl.label} high</span></div>
-          ${plan.t3 ? `<div class="plan-row"><span class="plan-key">Target 3</span><span class="plan-val v-green">${fmt(plan.t3)} &nbsp;(${rr(plan.rr3)}) ← 6-month high</span></div>` : ''}
+          <div class="plan-row"><span class="plan-key">Target 1</span><span class="plan-val v-green">${fmt(plan.t1)} &nbsp;(${rr(plan.rr1)}) ← ${plan.t1_ref || 'nearest swing high'}</span></div>
+          ${plan.t2 ? `<div class="plan-row"><span class="plan-key">Target 2</span><span class="plan-val v-green">${fmt(plan.t2)} &nbsp;(${rr(plan.rr2)}) ← ${plan.t2_ref || (lvl.label + ' high')}</span></div>` : ''}
+          ${plan.t3 ? `<div class="plan-row"><span class="plan-key">Target 3</span><span class="plan-val v-green">${fmt(plan.t3)} &nbsp;(${rr(plan.rr3)}) ← ${plan.t3_ref || '6-month high'}</span></div>` : ''}
         </div>
         <div class="plan-block">
           <div class="plan-title">EMAs &amp; Moving Averages</div>
-          <div class="plan-row"><span class="plan-key">EMA5</span><span class="plan-val v-plain">${fmt(d.emas.ema5)}</span></div>
-          <div class="plan-row"><span class="plan-key">EMA9</span><span class="plan-val v-plain">${fmt(d.emas.ema9)}</span></div>
+          <div class="plan-row"><span class="plan-key">EMA5${d.emas.src ? ' ('+d.emas.src+')' : ''}</span><span class="plan-val v-plain">${fmt(d.emas.ema5)}</span></div>
+          <div class="plan-row"><span class="plan-key">EMA9${d.emas.src ? ' ('+d.emas.src+')' : ''}</span><span class="plan-val v-plain">${fmt(d.emas.ema9)}</span></div>
           ${d.sma50  ? `<div class="plan-row"><span class="plan-key">SMA50</span><span class="plan-val v-plain">${fmt(d.sma50)}</span></div>` : ''}
           ${d.sma200 ? `<div class="plan-row"><span class="plan-key">SMA200</span><span class="plan-val v-plain">${fmt(d.sma200)}</span></div>` : ''}
           ${d.atr    ? `<div class="plan-row"><span class="plan-key">ATR</span><span class="plan-val v-amber">${fmt(d.atr)} &nbsp;<span style="font-size:11px;color:var(--text3)">avg daily range</span></span></div>` : ''}
@@ -1080,16 +1220,12 @@ function swingCardHTML(d, idx) {
   const emaBadge = d.ema_ok
     ? '<span class="badge b-green">EMA5 &gt; EMA9 ✓</span>'
     : '<span class="badge b-red">EMA5 &lt; EMA9</span>';
-  const newsCnt = d.news ? d.news.length : 0;
-  const newsBadge = `<span class="news-badge ${newsCnt===0?'no-news':''}" onclick="event.stopPropagation();toggleNews('${id}')">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a4 4 0 0 1-4 4"/><path d="M10 2v4"/><path d="M8 10h8"/><path d="M8 14h8"/></svg>
-    ${newsCnt} news
-  </span>`;
+  const newsBadge = newsBadgeHTML(d, id);
   const lvl = d.levels, plan = d.plan;
 
   const scored  = scoreSwing(d);
   const score   = scored.score;
-  d._score      = score; // cache for sort
+  d._score      = scored.raw != null ? scored.raw : score; // uncapped for sort
 
   return `
   <div class="card ${favorites.has(d.ticker) ? 'favorited' : ''}" id="card-${id}">
@@ -1104,7 +1240,7 @@ function swingCardHTML(d, idx) {
         ${scoreBadgeHTML(score)}
         ${d.data_source === 'TradingView (live)' ? '<span class="badge b-green" title="Live TradingView data">📡 Live</span>' : '<span class="badge" style="background:var(--bg3);color:var(--text3);border:1px solid var(--border)" title="Delayed yfinance data">⏱ Delayed</span>'}
         <span class="badge b-blue">200MA Rising ↑</span>
-        ${emaBadge}${newsBadge}${swingChartBtns(d.ticker)}
+        ${extensionBadgeHTML(d)}${emaBadge}${newsBadge}${swingChartBtns(d.ticker)}
       </div>
       <div class="card-right">
         <span class="price-val">$${parseFloat(d.price).toFixed(2)}</span>
@@ -1117,7 +1253,7 @@ function swingCardHTML(d, idx) {
     <div class="card-body" id="body-${id}">
       <div class="news-panel" id="news-${id}" style="display:none">
         <div class="news-panel-title">Recent news — ${d.ticker}</div>
-        ${newsHTML(d.news)}
+        ${newsHTML(d.news, d.ticker)}
       </div>
       <div class="card-detail">
         ${scoreBreakdownHTML(scored.rows)}

@@ -349,49 +349,52 @@ def safe_float(val):
 
 
 def get_news(ticker):
-    """Fetch recent news headlines via yfinance."""
+    """Recent headlines via yfinance (handles old and new Yahoo response shapes).
+    Each item: title, url, source, time (ET text), age_hours (None if unknown). Newest first."""
     news = []
     try:
-        t = yf.Ticker(ticker)
-        items = t.news or []
-        for item in items[:6]:
-            try:
-                # yfinance news structure varies by version
-                content = item.get("content", item)
-                title   = content.get("title") or item.get("title", "")
-                url     = ""
-                # try nested canonical url
-                click_url = content.get("clickThroughUrl") or {}
-                if isinstance(click_url, dict):
-                    url = click_url.get("url", "")
-                if not url:
-                    url = content.get("canonicalUrl", {}).get("url", "") if isinstance(content.get("canonicalUrl"), dict) else ""
-                if not url:
-                    url = item.get("link", "") or item.get("url", "")
+        items = yf.Ticker(ticker).news or []
+    except Exception as e:
+        print(f"  news fetch failed for {ticker}: {type(e).__name__}")
+        return news
+    now_utc = datetime.now(pytz.utc)
+    for item in items[:10]:
+        try:
+            content = item.get("content", item)
+            title   = content.get("title") or item.get("title", "")
+            url = ""
+            for key in ("clickThroughUrl", "canonicalUrl"):
+                obj = content.get(key)
+                if isinstance(obj, dict) and obj.get("url"):
+                    url = obj["url"]; break
+            if not url:
+                url = item.get("link", "") or item.get("url", "")
+            provider = content.get("provider") or {}
+            source = provider.get("displayName", "") if isinstance(provider, dict) else ""
+            if not source:
+                source = item.get("publisher", "") or item.get("source", "") or "Yahoo Finance"
 
-                # publisher
-                provider = content.get("provider") or {}
-                source = provider.get("displayName", "") if isinstance(provider, dict) else ""
-                if not source:
-                    source = item.get("publisher", "") or item.get("source", "Unknown")
-
-                # timestamp
-                pub_time = content.get("pubDate") or item.get("providerPublishTime", 0)
-                if isinstance(pub_time, (int, float)) and pub_time > 0:
-                    dt = datetime.fromtimestamp(pub_time, tz=ET)
-                    ts = dt.strftime("%b %d  %I:%M %p")
-                elif isinstance(pub_time, str):
-                    ts = pub_time[:16]
-                else:
-                    ts = ""
-
-                if title:
-                    news.append({"title": title, "url": url, "source": source, "time": ts})
-            except:
-                continue
-    except:
-        pass
-    return news
+            dt = None
+            pub = content.get("pubDate") or content.get("displayTime") or item.get("providerPublishTime")
+            if isinstance(pub, (int, float)) and pub > 0:
+                dt = datetime.fromtimestamp(pub, tz=pytz.utc)
+            elif isinstance(pub, str) and pub:
+                try:
+                    dt = datetime.fromisoformat(pub.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = pytz.utc.localize(dt)
+                except Exception:
+                    dt = None
+            ts, age = "", None
+            if dt:
+                ts  = dt.astimezone(ET).strftime("%b %d  %I:%M %p ET")
+                age = round((now_utc - dt).total_seconds() / 3600.0, 1)
+            if title:
+                news.append({"title": title, "url": url, "source": source, "time": ts, "age_hours": age})
+        except Exception:
+            continue
+    news.sort(key=lambda n: (n["age_hours"] is None, n["age_hours"] if n["age_hours"] is not None else 0))
+    return news[:6]
 
 
 def get_extended_hours_price(ticker, prev_close):
@@ -499,22 +502,31 @@ def get_tv_technicals_batch(tickers, interval="1d"):
                     continue
 
             ind = a.indicators
+            def _opt(key, nd=2):
+                v = ind.get(key)
+                try:
+                    v = float(v)
+                except (TypeError, ValueError):
+                    return None
+                return round(v, nd) if v > 0 else None
             results[ticker] = {
                 "price":    round(float(ind.get("close", 0)), 2),
                 "open":     round(float(ind.get("open", 0)), 2),
                 "high":     round(float(ind.get("high", 0)), 2),
                 "low":      round(float(ind.get("low", 0)), 2),
                 "volume":   int(ind.get("volume", 0)),
-                "ema5":     round(float(ind.get("EMA5",  ind.get("close", 0))), 2),
-                "ema9":     round(float(ind.get("EMA9",  ind.get("close", 0))), 2),
+                # NOTE: TradingView's scanner list has EMA5/EMA10/EMA20 but NO EMA9, VWAP or ATR.
+                # Leave those None so callers compute real values instead of a fake one.
+                "ema5":     _opt("EMA5"),
+                "ema9":     _opt("EMA9"),
                 "sma20":    round(float(ind.get("SMA20", 0)), 2),
                 "sma50":    round(float(ind.get("SMA50", 0)), 2),
                 "sma200":   round(float(ind.get("SMA200", 0)), 2),
-                "vwap":     round(float(ind.get("VWAP", 0)), 2),
-                "rsi":      round(float(ind.get("RSI", 0)), 1),
-                "atr":      round(float(ind.get("ATR", 0)), 2),
-                "change":   round(float(ind.get("change", 0)), 2),
-                "ema_ok":   bool(ind.get("EMA5", 0) > ind.get("EMA9", 0)),
+                "vwap":     _opt("VWAP"),
+                "rsi":      _opt("RSI", 1),
+                "atr":      _opt("ATR"),
+                "change":   round(float(ind.get("change") or 0), 2),
+                "ema_ok":   None,
                 "source":   "tradingview",
             }
 
@@ -830,6 +842,193 @@ def build_swing_card(row):
     }
 
 
+
+# ══════════════════════════════════════════════════════════════
+#  INTRADAY CONTEXT, SUPPORT/FLIP LEVELS, STATUS, RANGE
+# ══════════════════════════════════════════════════════════════
+
+def get_intraday_context(ticker):
+    """Real intraday VWAP, HOD/LOD and hold-tracking from yfinance 1-min bars."""
+    ctx = {"ok": False}
+    try:
+        df = yf.Ticker(ticker).history(period="2d", interval="1m", prepost=True)
+        if df is None or df.empty:
+            return ctx
+        df.index = df.index.tz_convert(ET)
+        last_date = df.index[-1].date()
+        day = df[df.index.date == last_date]
+        reg = day.between_time("09:30", "15:59")
+        pmk = day.between_time("04:00", "09:29")
+        base = reg if len(reg) >= 1 else pmk
+        if len(base) < 3:
+            return ctx
+        tp  = (base["High"] + base["Low"] + base["Close"]) / 3
+        vol = base["Volume"].astype(float)
+        if vol.sum() <= 0:
+            return ctx
+        cum_vwap = (tp * vol).cumsum() / vol.cumsum()
+        last_ts  = day.index[-1]
+        age_min  = (datetime.now(ET) - last_ts).total_seconds() / 60.0
+        ctx.update({
+            "ok": True,
+            "vwap": round(float(cum_vwap.iloc[-1]), 4),
+            "vwap_src": "live" + (" (regular session)" if len(reg) >= 1 else " (pre-market)"),
+            "hod": round(float(base["High"].max()), 4),
+            "lod": round(float(base["Low"].min()), 4),
+            "last": round(float(day["Close"].iloc[-1]), 4),
+            "last_time": last_ts.strftime("%I:%M %p"),
+            "age_min": round(age_min, 1),
+            "ema5": round(float(df["Close"].ewm(span=EMA_SHORT, adjust=False).mean().iloc[-1]), 4),
+            "ema9": round(float(df["Close"].ewm(span=EMA_LONG, adjust=False).mean().iloc[-1]), 4),
+            "bars_above_vwap_last10": int((base["Close"].iloc[-10:] > cum_vwap.iloc[-10:]).sum()),
+            "_closes": [float(x) for x in day["Close"].values],
+            "_lows":   [float(x) for x in day["Low"].values],
+        })
+    except Exception:
+        pass
+    return ctx
+
+
+def level_hold(ctx, level):
+    """How many consecutive trailing 1-min closes are above `level`, and whether it was retested."""
+    if not ctx.get("ok") or not level:
+        return {"held_min": None, "retested": False}
+    closes, lows = ctx["_closes"], ctx["_lows"]
+    n = 0
+    for c in reversed(closes):
+        if c > level:
+            n += 1
+        else:
+            break
+    recent_lows = lows[-45:]
+    touched = any(level * 0.995 <= lo <= level * 1.006 for lo in recent_lows)
+    return {"held_min": n, "retested": bool(touched and n >= 2 and closes[-1] > level)}
+
+
+def cluster_levels(levels, pct=0.03, descending=False):
+    """Collapse levels within `pct` of each other, keeping the first seen in sorted order."""
+    out = []
+    for lv in sorted(set(levels), reverse=descending):
+        if not out or abs(lv - out[-1]) / max(out[-1], 1e-9) > pct:
+            out.append(lv)
+    return out
+
+
+def compute_atr14(hist):
+    try:
+        h, l, c = hist["High"], hist["Low"], hist["Close"]
+        tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+        v = float(tr.iloc[-14:].mean())
+        return round(v, 4) if v > 0 else None
+    except Exception:
+        return None
+
+
+def build_support_levels(price, hist_6m, ctx, vwap_live, pm_high, prev_high):
+    """Levels BELOW price: flipped resistance (broken swing highs), swing lows, VWAP, PM/prior-day high."""
+    cands = []   # (level, kind, priority)
+    highs, lows = hist_6m["High"], hist_6m["Low"]
+    ph, pl = [], []
+    for i in range(2, len(highs) - 2):
+        if highs.iloc[i] > highs.iloc[i-1] and highs.iloc[i] > highs.iloc[i-2] and \
+           highs.iloc[i] > highs.iloc[i+1] and highs.iloc[i] > highs.iloc[i+2]:
+            ph.append(round(float(highs.iloc[i]), 2))
+        if lows.iloc[i] < lows.iloc[i-1] and lows.iloc[i] < lows.iloc[i-2] and \
+           lows.iloc[i] < lows.iloc[i+1] and lows.iloc[i] < lows.iloc[i+2]:
+            pl.append(round(float(lows.iloc[i]), 2))
+    floor = price * 0.75
+    for h in cluster_levels([h for h in ph if floor <= h < price * 0.998], descending=True):
+        cands.append((h, "Flipped resistance (old swing high)", 0))
+    if pm_high and floor <= pm_high < price * 0.998:
+        cands.append((pm_high, "Flipped resistance (pre-market high)", 0))
+    if prev_high and floor <= prev_high < price * 0.998:
+        cands.append((prev_high, "Flipped resistance (prior-day high)", 0))
+    if vwap_live and floor <= vwap_live < price * 0.998:
+        cands.append((vwap_live, "VWAP", 1))
+    for l in cluster_levels([l for l in pl if floor <= l < price * 0.998], descending=True):
+        cands.append((l, "Demand (swing low)", 2))
+    cands.sort(key=lambda t: (-t[0], t[2]))
+    out = []
+    for lv, kind, _p in cands:
+        if any(abs(lv - o["level"]) / o["level"] < 0.01 for o in out):
+            continue
+        hold = level_hold(ctx, lv)
+        out.append({
+            "level": round(lv, 2), "kind": kind,
+            "dist_pct": round((price - lv) / price * 100, 1),
+            "held_min": hold["held_min"], "retested": hold["retested"],
+            "flipped": kind.startswith("Flipped"),
+        })
+        if len(out) >= 4:
+            break
+    return out
+
+
+def determine_status(price, vwap, vwap_live_ok, ema5, entry_low, entry_high, resistance,
+                     supports, atr, age_min):
+    """Single live read on where price sits versus the playbook levels."""
+    if age_min and age_min > 120:
+        stale = f" · last bar {age_min/60:.0f}h ago (market closed?)"
+    elif age_min and age_min > 5:
+        stale = f" · data ~{age_min:.0f}m old"
+    else:
+        stale = ""
+    if vwap_live_ok and vwap and price < vwap * 0.998:
+        return {"code": "below_vwap", "label": "🔻 Below VWAP", "tone": "red",
+                "detail": f"Price {price:.2f} under VWAP {vwap:.2f} — demand lost intraday; no long until reclaimed{stale}"}
+    if resistance:
+        gap = (resistance - price) / price * 100
+        if gap <= 1.5:
+            return {"code": "testing", "label": "👀 Testing resistance", "tone": "amber",
+                    "detail": f"{gap:.1f}% under {resistance:.2f} — needs a clean break and hold{stale}"}
+        return {"code": "below_res", "label": "⏳ Below resistance", "tone": "amber",
+                "detail": f"{gap:.1f}% under {resistance:.2f} — wait for break and hold{stale}"}
+    flip = next((s for s in supports if s["flipped"]), None)
+    if flip and flip["retested"] and (flip["held_min"] or 0) >= 2:
+        return {"code": "retest_hold", "label": "✅ Retest holding", "tone": "green",
+                "detail": f"{flip['kind']} {flip['level']:.2f} retested and held {flip['held_min']}m{stale}"}
+    if entry_low and entry_high and entry_low * 0.995 <= price <= entry_high * 1.005:
+        return {"code": "in_zone", "label": "🎯 In entry zone", "tone": "green",
+                "detail": f"{entry_low:.2f} – {entry_high:.2f} (EMA5 / VWAP){stale}"}
+    if entry_high and price > entry_high:
+        ext = price - entry_high
+        extended = (ext / atr > 1.0) if atr else ((price / entry_high - 1) > 0.04)
+        if extended:
+            return {"code": "extended", "label": "🚀 Extended", "tone": "red",
+                    "detail": f"{(price/entry_high-1)*100:.1f}% above entry zone — wait for pullback to {entry_high:.2f}{stale}"}
+        return {"code": "above_zone", "label": "↗ Above zone", "tone": "blue",
+                "detail": f"Watching for pullback to {entry_high:.2f}{stale}"}
+    return {"code": "below_zone", "label": "🔻 Below zone", "tone": "red",
+            "detail": f"Under entry zone {entry_low}{stale}"}
+
+
+def compute_range(price, atr, hod, lod, resistance, t1, t2):
+    """How much room is left versus the stock's typical daily range."""
+    out = {"atr": atr, "used_pct": None, "room_t1_pct": None, "room_t1_atr": None,
+           "room_t2_pct": None, "verdict": "unknown", "note": ""}
+    if hod and lod and atr:
+        out["used_pct"] = round((hod - lod) / atr * 100)
+    tgt = t1 if (t1 and t1 > price * 1.001) else (t2 if (t2 and t2 > price * 1.001) else None)
+    if t2 and t2 > price * 1.001:
+        out["room_t2_pct"] = round((t2 / price - 1) * 100, 1)
+    if not tgt:
+        out["verdict"] = "open"
+        out["note"] = "No known overhead target — price above mapped levels"
+        return out
+    out["room_t1_pct"] = round((tgt / price - 1) * 100, 1)
+    if atr:
+        out["room_t1_atr"] = round((tgt - price) / atr, 2)
+        used = out["used_pct"] if out["used_pct"] is not None else 0
+        if out["room_t1_atr"] >= 1.0 and used < 100:
+            out["verdict"] = "plenty"
+        elif out["room_t1_atr"] >= 0.5 and used < 150:
+            out["verdict"] = "limited"
+        else:
+            out["verdict"] = "tight"
+        out["note"] = f"{out['room_t1_pct']}% to T1 = {out['room_t1_atr']}× ATR; day range used {used}% of ATR"
+    return out
+
+
 def build_day_card_tv(row, session, tv=None):
     """
     Build day trade card using TradingView data for live technicals.
@@ -882,6 +1081,23 @@ def build_day_card_tv(row, session, tv=None):
     prev_low   = round(float(hist_6m["Low"].iloc[-2]),   2) if len(hist_6m) >= 2 else price
     vwap_proxy = round((prev_high + prev_low + prev_close) / 3, 2)
 
+    # Live intraday context (true VWAP, HOD/LOD, hold tracking)
+    ctx = get_intraday_context(ticker)
+    vwap_live_ok = bool(ctx.get("ok"))
+    vwap_val = round(ctx["vwap"], 2) if vwap_live_ok else vwap_proxy
+    vwap_src = ctx["vwap_src"] if vwap_live_ok else "proxy (prior-day pivot)"
+    atr = atr or compute_atr14(hist_6m)
+
+    # Real EMA5/EMA9 — 1-minute bars during/after the session, daily bars in pre-market
+    if session != "premarket" and vwap_live_ok and ctx.get("ema5") and ctx.get("ema9"):
+        ema5, ema9, ema_src = round(ctx["ema5"], 2), round(ctx["ema9"], 2), "1-min"
+    else:
+        _c = hist_6m["Close"]
+        ema5 = round(float(_c.ewm(span=EMA_SHORT, adjust=False).mean().iloc[-1]), 2)
+        ema9 = round(float(_c.ewm(span=EMA_LONG,  adjust=False).mean().iloc[-1]), 2)
+        ema_src = "daily"
+    ema_ok = bool(ema5 > ema9)
+
     # 6-month range levels
     high_6m      = round(float(hist_6m["High"].max()), 2)
     low_6m       = round(float(hist_6m["Low"].min()),  2)
@@ -911,59 +1127,61 @@ def build_day_card_tv(row, session, tv=None):
     if session == "premarket":
         key_high    = prev_high
         key_low     = prev_low
-        entry_low   = round(min(vwap_proxy, ema5), 2)
-        entry_high  = round(max(vwap_proxy, ema5), 2)
         level_label = "Prior day"
-        entry_ref   = "EMA5 / VWAP"
-        stop        = round(min(ema9, vwap_proxy) * 0.998, 2)
-        stop_ref    = "below EMA9" if ema9 <= vwap_proxy else "below VWAP"
     else:
         key_high    = pm.get("pm_high") or prev_high
         key_low     = pm.get("pm_low")  or prev_low
-        entry_low   = round(min(key_low, ema5), 2)
-        entry_high  = round(max(key_low, ema5), 2)
         level_label = "Pre-market"
-        entry_ref   = "EMA5 / PM Low"
-        stop        = round(ema9 * 0.998, 2)
-        stop_ref    = "below EMA9"
+    # Playbook entry: pullback to VWAP or EMA5 (whichever band is lower→higher)
+    entry_low   = round(min(vwap_val, ema5), 2)
+    entry_high  = round(max(vwap_val, ema5), 2)
+    entry_ref   = "EMA5 / VWAP" if vwap_live_ok else "EMA5 / VWAP (proxy)"
+    stop        = round(min(ema9, vwap_val) * 0.998, 2)
+    stop_ref    = "below EMA9 / VWAP"
 
     risk = entry_low - stop
 
-    # Determine nearest swing high relative to current price
-    # If price is BELOW nearest swing high → it's overhead resistance, not a target
-    # If price is ABOVE nearest swing high → already broken out, use next one as T1
+    # Overhead resistance: nearest swing high price has not cleared yet
     nearest_swing   = swing_highs[0] if swing_highs else None
-    remaining_highs = swing_highs[1:] if swing_highs else []
-
-    resistance      = None  # overhead resistance warning
+    resistance      = None
     resistance_ref  = None
-
     if nearest_swing and price < nearest_swing:
-        # Price hasn't cleared this level yet — it's resistance
         resistance     = nearest_swing
         resistance_ref = "overhead resistance — needs to clear before entry"
-        # T1 = next distinct swing high at least 5% above resistance
-        t1_candidates  = [h for h in remaining_highs if h > nearest_swing * 1.05]
-        if not t1_candidates:
-            # Fall back to 2:1R projected from breakout point
-            breakout_entry = nearest_swing * 1.01
-            t1 = round(breakout_entry + risk * 2, 2) if risk > 0 else round(nearest_swing * 1.15, 2)
-        else:
-            t1 = round(min(t1_candidates), 2)
-    else:
-        # Price has cleared nearest swing high — use next distinct level as T1
-        t1_candidates  = [h for h in swing_highs if h > entry_low * 1.03]
-        t1 = round(min(t1_candidates), 2) if t1_candidates else round(entry_low + risk * 2, 2) if risk > 0 else round(entry_low * 1.10, 2)
 
-    # T2 = prior day / PM HOD breakout level
-    t2 = round(key_high * 1.002, 2)
-
-    # T3 = 6-month high ONLY if higher than T2
-    t3 = round(high_6m * 1.002, 2) if high_6m > t2 else None
+    # Targets: every mapped level AHEAD of price (or ahead of resistance), sorted ascending
+    anchor  = resistance if resistance else price
+    cand_t  = [(h, "swing high") for h in swing_highs if h > anchor]
+    cand_t += [(round(key_high * 1.002, 2), f"{level_label} high")]
+    cand_t += [(round(high_6m * 1.002, 2), "6-month high")]
+    # first target must be meaningfully ahead (>=3%) so T1 is never "basically the entry"
+    min_first = anchor * 1.03
+    cand_t = sorted([(v, r) for v, r in cand_t if v > anchor * 1.003], key=lambda x: x[0])
+    targets = []
+    for v, r in cand_t:
+        if not targets:
+            if v < min_first:
+                continue
+        elif (v - targets[-1][0]) / targets[-1][0] < 0.02:
+            continue
+        targets.append((v, r))
+    if not targets:
+        proj = round(anchor * 1.01 + risk * 2, 2) if risk > 0 else round(anchor * 1.10, 2)
+        targets = [(proj, "2R projection")]
+    targets = targets[:3]
+    t1, t1_ref = targets[0]
+    t2, t2_ref = targets[1] if len(targets) > 1 else (None, None)
+    t3, t3_ref = targets[2] if len(targets) > 2 else (None, None)
 
     rr1 = round((t1 - entry_low) / risk, 1) if risk > 0 else 0
-    rr2 = round((t2 - entry_low) / risk, 1) if risk > 0 else 0
+    rr2 = round((t2 - entry_low) / risk, 1) if t2 and risk > 0 else None
     rr3 = round((t3 - entry_low) / risk, 1) if t3 and risk > 0 else None
+
+    supports = build_support_levels(price, hist_6m, ctx, vwap_val if vwap_live_ok else None,
+                                    pm.get("pm_high"), prev_high)
+    status = determine_status(price, vwap_val, vwap_live_ok, ema5, entry_low, entry_high,
+                              resistance, supports, atr, ctx.get("age_min"))
+    range_info = compute_range(price, atr, ctx.get("hod"), ctx.get("lod"), resistance, t1, t2)
 
     news = get_news(ticker)
     ext  = get_extended_hours_price(ticker, prev_close)
@@ -973,6 +1191,8 @@ def build_day_card_tv(row, session, tv=None):
         "sector": sector, "industry": industry,
         "price": price, "change": change, "relvol": relvol,
         "volume": volume, "pos": pos, "squeeze": False,
+        "status": status, "range": range_info, "supports": supports,
+        "intraday": {k: v for k, v in ctx.items() if not k.startswith("_")},
         "ema_ok": bool(ema_ok),
         "atr": atr, "sma50": sma50, "sma200": sma200,
         "data_source": data_source,
@@ -980,7 +1200,8 @@ def build_day_card_tv(row, session, tv=None):
         "levels": {
             "label": level_label,
             "key_high": key_high, "key_low": key_low,
-            "prev_close": prev_close, "vwap": vwap_proxy,
+            "prev_close": prev_close, "vwap": vwap_val, "vwap_src": vwap_src,
+            "hod": ctx.get("hod"), "lod": ctx.get("lod"),
             "pm_high": pm.get("pm_high"), "pm_low": pm.get("pm_low"),
             "pm_open": pm.get("pm_open"), "pm_last": pm.get("pm_last"),
             "high_6m": high_6m, "low_6m": low_6m,
@@ -996,9 +1217,10 @@ def build_day_card_tv(row, session, tv=None):
             "resistance": resistance, "resistance_ref": resistance_ref,
             "breakout_level": resistance,
             "t1": t1, "t2": t2, "t3": t3,
+            "t1_ref": t1_ref, "t2_ref": t2_ref, "t3_ref": t3_ref,
             "rr1": rr1, "rr2": rr2, "rr3": rr3,
         },
-        "emas": {"ema5": ema5, "ema9": ema9},
+        "emas": {"ema5": ema5, "ema9": ema9, "src": ema_src},
     }
 
 
@@ -1024,13 +1246,13 @@ def build_swing_card_tv(row, tv=None, tv_daily=None):
 
     # Override EMAs and SMAs with TradingView if available
     if tv_daily:
-        ema5   = tv_daily.get("ema5")   or tech["ema5"]
-        ema9   = tv_daily.get("ema9")   or tech["ema9"]
+        ema5   = tech["ema5"]      # TradingView has no EMA9, so use our own daily EMAs
+        ema9   = tech["ema9"]
         sma20  = tv_daily.get("sma20")  or tech["sma20"]
         sma50  = tv_daily.get("sma50")  or tech["sma50"]
         sma200 = tv_daily.get("sma200") or tech["sma200"]
         price  = tv_daily.get("price")  or tech["current_price"]
-        ema_ok = bool(tv_daily.get("ema_ok", tech["ema_ok"]))
+        ema_ok = bool(tech["ema_ok"])
         data_source = "TradingView (live)"
     else:
         ema5   = tech["ema5"]
@@ -1122,12 +1344,14 @@ def index():
 # Caches Finviz results for 10 minutes to avoid redundant fetches
 import time as _time
 _cache = {}
-_CACHE_TTL = 600  # 10 minutes
+_CACHE_TTL = 600  # swings: 10 minutes
+_CACHE_TTL_FAST = 120  # day trades / squeezes: 2 minutes (momentum moves fast)
 
 def cached_fetch(filters, label):
     key = label
     now = _time.time()
-    if key in _cache and (now - _cache[key]["ts"]) < _CACHE_TTL:
+    ttl = _CACHE_TTL if label == "Swings" else _CACHE_TTL_FAST
+    if key in _cache and (now - _cache[key]["ts"]) < ttl:
         print(f"  → {label}: using cached results ({len(_cache[key]['df'])} tickers)")
         return _cache[key]["df"]
     df = fetch_screener(filters, label)
@@ -1299,6 +1523,7 @@ def build_day_sq_response(filters, label, session, is_squeeze=False, exclude_tic
         except Exception as e:
             print(f"  !! {label} card error {row.get('Ticker')}: {e}")
 
+    log_snapshots(cards, session, label)
     sectors = sorted(set(c["sector"] for c in cards if c.get("sector")))
     return cards, sectors
 
@@ -1426,6 +1651,110 @@ def run_screener():
         "sectors": all_sectors,
     })
 
+
+
+# ══════════════════════════════════════════════════════════════
+#  SNAPSHOT LOG + REVIEW  (did the levels actually work?)
+# ══════════════════════════════════════════════════════════════
+import json as _json
+SNAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "snapshots.jsonl")
+_last_logged = {}
+
+def log_snapshots(cards, session, label):
+    try:
+        now = datetime.now(ET)
+        lines = []
+        for c in cards:
+            tk = c.get("ticker")
+            if not tk or (_time.time() - _last_logged.get(tk, 0)) < 300:
+                continue
+            _last_logged[tk] = _time.time()
+            plan, lvl, st = c.get("plan", {}), c.get("levels", {}), c.get("status", {})
+            lines.append(_json.dumps({
+                "ts": now.isoformat(), "date": now.strftime("%Y-%m-%d"), "session": session,
+                "tab": label, "ticker": tk, "price": c.get("price"),
+                "status": st.get("code"), "vwap": lvl.get("vwap"),
+                "entry_low": plan.get("entry_low"), "entry_high": plan.get("entry_high"),
+                "resistance": plan.get("resistance"), "t1": plan.get("t1"), "t2": plan.get("t2"),
+                "t3": plan.get("t3"), "supports": [s["level"] for s in c.get("supports", [])],
+                "range_verdict": (c.get("range") or {}).get("verdict"),
+            }))
+        if lines:
+            with open(SNAP_FILE, "a", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+    except Exception as e:
+        print(f"  snapshot log error: {e}")
+
+
+def _read_snapshots():
+    if not os.path.exists(SNAP_FILE):
+        return []
+    out = []
+    with open(SNAP_FILE, encoding="utf-8") as f:
+        for ln in f:
+            try:
+                out.append(_json.loads(ln))
+            except Exception:
+                pass
+    return out
+
+
+@app.route("/api/snapshots/dates")
+def snapshot_dates():
+    snaps = _read_snapshots()
+    dates = sorted({s["date"] for s in snaps}, reverse=True)
+    return jsonify({"dates": dates, "count": len(snaps)})
+
+
+@app.route("/api/snapshots/review")
+def snapshot_review():
+    """For each logged snapshot on a date, see what price did afterward."""
+    date = request.args.get("date")
+    snaps = [s for s in _read_snapshots() if s["date"] == date]
+    if not snaps:
+        return jsonify({"rows": [], "summary": []})
+    hist_cache, rows = {}, []
+    for s in snaps:
+        tk = s["ticker"]
+        try:
+            if tk not in hist_cache:
+                h = yf.Ticker(tk).history(period="7d", interval="1m", prepost=True)
+                h.index = h.index.tz_convert(ET)
+                hist_cache[tk] = h
+            h = hist_cache[tk]
+            ts = datetime.fromisoformat(s["ts"])
+            after = h[h.index > ts]
+            if after.empty:
+                rows.append({**s, "outcome": "no later data yet"}); continue
+            # window = rest of that session day if snapshot was before 4pm, else the next trading day
+            first_day = after.index[0].date()
+            win = after[after.index.date == first_day]
+            price = float(s["price"])
+            hi, lo = float(win["High"].max()), float(win["Low"].min())
+            r = {**s, "window_date": str(first_day),
+                 "mfe_pct": round((hi / price - 1) * 100, 1),
+                 "mae_pct": round((lo / price - 1) * 100, 1),
+                 "hit_t1": bool(s.get("t1") and hi >= s["t1"]),
+                 "hit_t2": bool(s.get("t2") and hi >= s["t2"]),
+                 "touched_entry": bool(s.get("entry_high") and lo <= s["entry_high"]),
+                 "cleared_resistance": bool(s.get("resistance") and hi > s["resistance"]),
+                 "lost_vwap_support": bool(s.get("vwap") and lo < s["vwap"] * 0.995)}
+            rows.append(r)
+        except Exception as e:
+            rows.append({**s, "outcome": f"error: {e}"})
+    # summary by status
+    summ = {}
+    for r in rows:
+        if "mfe_pct" not in r:
+            continue
+        g = summ.setdefault(r.get("status") or "?", {"status": r.get("status") or "?", "n": 0, "t1": 0, "t2": 0, "mfe": 0.0, "mae": 0.0})
+        g["n"] += 1; g["t1"] += r["hit_t1"]; g["t2"] += r["hit_t2"]
+        g["mfe"] += r["mfe_pct"]; g["mae"] += r["mae_pct"]
+    summary = [{"status": g["status"], "n": g["n"],
+                "t1_rate": round(g["t1"] / g["n"] * 100), "t2_rate": round(g["t2"] / g["n"] * 100),
+                "avg_mfe": round(g["mfe"] / g["n"], 1), "avg_mae": round(g["mae"] / g["n"], 1)}
+               for g in summ.values()]
+    return jsonify({"rows": rows, "summary": summary})
 
 @app.route("/api/cache/clear")
 def clear_cache():
